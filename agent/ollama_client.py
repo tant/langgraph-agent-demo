@@ -14,8 +14,10 @@ This module provides adapters to interact with the Ollama API:
 
 import os
 import requests
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Generator
 import logging
+import json
+import httpx
 
 # --- Configuration ---
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "localhost")
@@ -72,6 +74,33 @@ def generate_text(prompt: str, model: str = DEFAULT_GENERATE_MODEL, **kwargs) ->
     except ValueError as e:
         logger.error(f"Invalid response from Ollama generate API: {e}")
         raise
+
+async def generate_text_stream(prompt: str, model: str = "gpt-oss") -> Generator[str, None, None]:
+    """
+    Generates text from a prompt using the Ollama API with streaming.
+    """
+    url = f"{OLLAMA_BASE_URL}/api/generate"
+    data = {"model": model, "prompt": prompt, "stream": True}
+    
+    logger.info(f"Calling Ollama generate API with streaming for model {model}")
+    
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            async with client.stream("POST", url, json=data) as response:
+                response.raise_for_status()
+                async for chunk in response.aiter_bytes():
+                    if chunk:
+                        # Decode and parse the JSON chunk
+                        json_chunk = json.loads(chunk.decode("utf-8"))
+                        yield json_chunk.get("response", "")
+    except httpx.ReadTimeout:
+        logger.error(f"Ollama request timed out after 60 seconds for model {model}.")
+        yield "[ERROR: The request to the AI model timed out. The model might be busy or unavailable. Please try again later.]"
+    except Exception as e:
+        logger.error(f"An unexpected error occurred while streaming from Ollama: {e}", exc_info=True)
+        yield f"[ERROR: An unexpected error occurred: {e}]"
+    finally:
+        logger.info("Ollama stream finished.")
 
 def get_embedding(text: str, model: str = DEFAULT_EMBEDDING_MODEL) -> List[float]:
     """

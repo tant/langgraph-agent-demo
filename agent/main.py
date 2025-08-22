@@ -2,12 +2,14 @@ import os
 import logging
 import uuid
 from fastapi import FastAPI, Request, HTTPException, Depends, BackgroundTasks
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Optional, List
 from datetime import datetime
 from agent.database import init_db, create_conversation, get_conversation, create_message, get_messages_history
+from agent.langgraph_flow import AgentState, create_flow, create_streaming_flow
+from agent.retriever import upsert_vectors
 
 # --- Configuration ---
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "localhost")
@@ -184,6 +186,166 @@ async def create_conversation_endpoint(request: CreateConversationRequest):
         logger.error(f"Error creating conversation: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
+@app.post("/conversations/{conversation_id}/stream", response_class=StreamingResponse)
+async def stream_message_endpoint(conversation_id: str, request: CreateMessageRequest, background_tasks: BackgroundTasks):
+    """
+    Create a new message and stream the assistant's response.
+    """
+    logger.info(f"Streaming message in conversation {conversation_id}")
+    try:
+        conv_uuid = uuid.UUID(conversation_id)
+        conv = await get_conversation(conv_uuid)
+        if not conv:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+
+        # 1. Save user message and enqueue its embedding
+        user_msg = await create_message(
+            conversation_id=conv_uuid, sender="user", text=request.content
+        )
+        background_tasks.add_task(
+            embed_and_store_message,
+            message_id=str(user_msg.id),
+            conversation_id=str(conv_uuid),
+            user_id=conv.user_id,
+            text=request.content,
+        )
+        logger.info(f"User message {user_msg.id} saved.")
+
+        # 2. Prepare the generator for the streaming response
+        async def response_generator():
+            full_response = ""
+            try:
+                # Get history for the flow state
+                history = await get_messages_history(conv_uuid)
+                initial_state: AgentState = {
+                    "conversation_id": str(conv_uuid),
+                    "user_id": conv.user_id,
+                    "chat_history": [{"role": msg.sender, "content": msg.text} for msg in history],
+                    "metadata": {"conversation_id": str(conv_uuid), "user_id": conv.user_id},
+                    "retrieved_context": None, "response": None, "stream": True,
+                }
+
+                # Create and invoke the streaming flow
+                flow = create_streaming_flow()
+                chunk_index = 0
+                async for response_chunk_dict in flow.astream(initial_state):
+                    if "response" in response_chunk_dict:
+                        response_chunk = response_chunk_dict["response"]
+                        # SSE format: "data: {json_string}\n\n"
+                        sse_data = f"data: {response_chunk}\n\n"
+                        logger.info(f"[{conversation_id}] Yielding chunk {chunk_index}: {sse_data.strip()}")
+                        yield sse_data
+                        full_response += response_chunk
+                        chunk_index += 1
+            
+            except Exception as e:
+                logger.error(f"[{conversation_id}] Error during stream generation: {e}", exc_info=True)
+            finally:
+                logger.info(f"[{conversation_id}] Stream finished. Saving full assistant response.")
+                if full_response:
+                    # Save the complete assistant message
+                    assistant_msg = await create_message(
+                        conversation_id=conv_uuid, sender="assistant", text=full_response
+                    )
+                    # Enqueue embedding for the assistant's message
+                    await embed_and_store_message(
+                        message_id=str(assistant_msg.id),
+                        conversation_id=str(conv_uuid),
+                        user_id=conv.user_id,
+                        text=full_response,
+                    )
+                    logger.info(f"Assistant message {assistant_msg.id} saved and embedding enqueued.")
+
+        return StreamingResponse(response_generator(), media_type="text/event-stream")
+
+    except Exception as e:
+        logger.error(f"Error in stream endpoint: {e}", exc_info=True)
+        # Cannot raise HTTPException here as the response has already started streaming
+        # Log the error and the stream will close.
+        return StreamingResponse(iter([f"Error: {e}"]), media_type="text/plain", status_code=500)
+
+
+async def run_assistant_flow(conversation_id: uuid.UUID, user_id: str):
+    """
+    Runs the LangGraph flow to generate and save the assistant's response.
+    This is run in the background.
+    """
+    logger.info(f"Starting assistant flow for conversation {conversation_id}")
+    try:
+        # 1. Get history to build the current state
+        history = await get_messages_history(conversation_id)
+        
+        # 2. Create initial state for the flow
+        initial_state: AgentState = {
+            "conversation_id": str(conversation_id),
+            "user_id": user_id,
+            "chat_history": [
+                {"role": msg.sender, "content": msg.text} for msg in history
+            ],
+            "metadata": {
+                "conversation_id": str(conversation_id),
+                "user_id": user_id,
+            },
+            "retrieved_context": None,
+            "response": None,
+        }
+
+        # 3. Create and invoke the LangGraph flow
+        flow = create_flow()
+        final_state = await flow.ainvoke(initial_state)
+
+        # 4. Save the assistant's response to the database
+        assistant_response = final_state.get("response")
+        if assistant_response:
+            assistant_msg = await create_message(
+                conversation_id=conversation_id,
+                sender="assistant",
+                text=assistant_response,
+            )
+            logger.info(f"Assistant response saved for conversation {conversation_id}")
+            
+            # Also embed the assistant's response
+            background_tasks = BackgroundTasks()
+            background_tasks.add_task(
+                embed_and_store_message,
+                message_id=str(assistant_msg.id),
+                conversation_id=str(conversation_id),
+                user_id=user_id,
+                text=assistant_response,
+            )
+        else:
+            logger.warning(f"No response generated by the flow for conversation {conversation_id}")
+
+    except Exception as e:
+        logger.error(f"Error in assistant flow for conversation {conversation_id}: {e}", exc_info=True)
+
+
+async def embed_and_store_message(message_id: str, conversation_id: str, user_id: str, text: str):
+    """
+    Generates embedding for a message and stores it in ChromaDB.
+    This is run in the background.
+    """
+    logger.info(f"Starting embedding for message {message_id}")
+    try:
+        # For now, we treat the whole message as a single document.
+        # In the future, we might chunk it.
+        documents = [text]
+        metadatas = [{
+            "message_id": message_id,
+            "conversation_id": conversation_id,
+            "user_id": user_id,
+            "created_at": datetime.utcnow().isoformat(),
+        }]
+        ids = [message_id]
+
+        # Upsert into ChromaDB
+        upsert_vectors(documents=documents, metadatas=metadatas, ids=ids)
+        logger.info(f"Successfully embedded and stored message {message_id}")
+
+    except Exception as e:
+        logger.error(f"Error embedding message {message_id}: {e}", exc_info=True)
+
+
 @app.post("/conversations/{conversation_id}/messages", status_code=202)
 async def create_message_endpoint(conversation_id: str, request: CreateMessageRequest, background_tasks: BackgroundTasks):
     """Create a new message in a conversation"""
@@ -211,8 +373,17 @@ async def create_message_endpoint(conversation_id: str, request: CreateMessageRe
         )
         logger.info(f"Message created with ID {msg.id}")
         
-        # TODO: In future, enqueue embedding job here using background_tasks
-        # For now, we just acknowledge the message creation
+        # Enqueue embedding for the user's message
+        background_tasks.add_task(
+            embed_and_store_message,
+            message_id=str(msg.id),
+            conversation_id=str(conv_uuid),
+            user_id=conv.user_id,
+            text=request.content,
+        )
+
+        # Enqueue the assistant flow to run in the background
+        background_tasks.add_task(run_assistant_flow, conversation_id=conv_uuid, user_id=conv.user_id)
         
         # Return minimal response for fast ACK
         return {"message_id": str(msg.id), "status": "accepted"}

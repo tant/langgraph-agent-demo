@@ -131,6 +131,47 @@ def simple_rerank(results: List[Dict[str, Any]], query_metadata: Optional[Dict[s
     logger.info("Re-ranking completed")
     return ranked_results
 
+def upsert_vectors(
+    documents: List[str],
+    metadatas: List[Dict[str, Any]],
+    ids: List[str],
+    collection_name: str = DEFAULT_COLLECTION_NAME,
+):
+    """
+    Upsert vectors into ChromaDB.
+
+    Args:
+        documents (List[str]): List of documents to embed and store.
+        metadatas (List[Dict]): List of metadata corresponding to each document.
+        ids (List[str]): List of unique IDs for each document.
+        collection_name (str): The name of the collection to upsert into.
+    """
+    if not documents:
+        logger.warning("Upsert called with no documents. Skipping.")
+        return
+
+    logger.info(f"Upserting {len(documents)} documents into collection '{collection_name}'")
+    try:
+        # Get embeddings for all documents in a single call if possible,
+        # but ollama_client supports one by one, which is fine for background tasks.
+        embeddings = [get_embedding(doc) for doc in documents]
+
+        # Get collection
+        collection = get_or_create_collection(collection_name)
+
+        # Upsert into collection
+        collection.upsert(
+            ids=ids,
+            embeddings=embeddings,
+            documents=documents,
+            metadatas=metadatas,
+        )
+        logger.info(f"Successfully upserted {len(documents)} documents.")
+    except Exception as e:
+        logger.error(f"Error upserting vectors to ChromaDB: {e}", exc_info=True)
+        raise
+
+
 # --- Test functions ---
 def test_query_and_rerank():
     """Test querying and re-ranking with a simple example."""

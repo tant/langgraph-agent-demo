@@ -7,7 +7,7 @@ This module defines the basic LangGraph flow with three nodes:
 - respond: Build prompt and generate response using LLM
 """
 
-from typing import Annotated, List, Dict, Any, Optional
+from typing import Annotated, List, Dict, Any, Optional, Generator, AsyncGenerator
 from typing_extensions import TypedDict
 from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
@@ -17,12 +17,11 @@ import uuid
 import logging
 from agent.database import get_messages_history
 from agent.retriever import query_vectors, simple_rerank
-from agent.ollama_client import generate_text
+from agent.ollama_client import generate_text, generate_text_stream
 
-# --- Logging ---
 logger = logging.getLogger(__name__)
 
-# --- Agent State ---
+# --- State ---
 class AgentState(TypedDict):
     """State for the LangGraph agent."""
     conversation_id: str
@@ -31,30 +30,11 @@ class AgentState(TypedDict):
     metadata: Dict[str, Any]  # Additional metadata
     retrieved_context: Optional[List[Dict[str, Any]]]  # Retrieved context from ChromaDB
     response: Optional[str]  # Final response from the LLM
+    stream: bool
 
-# --- Node Functions ---
 
-async def classify_node(state: AgentState) -> AgentState:
-    """
-    Classify node: Determine if retrieval is needed based on the user's message and chat history.
-    For simplicity in Phase 1, we'll always retrieve.
-    In the future, this could be more sophisticated.
-    """
-    logger.info("Classify node: Determining if retrieval is needed")
-    
-    # For Phase 1, always retrieve
-    # In a more advanced version, you might check:
-    # - Keywords in the user's message
-    # - Length of chat history
-    # - Time since last retrieval
-    # - Confidence of previous responses
-    
-    # Update state to indicate retrieval is needed
-    state["metadata"]["retrieval_needed"] = True
-    logger.info("Classify node: Retrieval is needed")
-    return state
-
-async def retrieve_node(state: AgentState) -> AgentState:
+# --- Nodes ---
+async def retrieve_node(state: AgentState) -> Dict[str, Any]:
     """
     Retrieve node: Query ChromaDB for context based on the user's latest message.
     """
@@ -106,83 +86,55 @@ async def retrieve_node(state: AgentState) -> AgentState:
         logger.error(f"Retrieve node: Error querying ChromaDB: {e}")
         state["retrieved_context"] = []
         
-    return state
+    logger.info("---RETRIEVE NODE FINISHED---")
+    return {"documents": documents, "user_message": user_message}
 
-async def respond_node(state: AgentState) -> AgentState:
+
+async def respond_node(state: AgentState) -> Dict[str, str]:
     """
-    Respond node: Build prompt with chat history and retrieved context, then generate response.
+    Respond node: Build prompt and generate a complete response.
     """
-    logger.info("Respond node: Building prompt and generating response")
-    
+    logger.info("Respond node: Generating complete response")
     try:
-        # Get the latest user message
-        user_message = None
-        for msg in reversed(state["chat_history"]):
-            # Check if it's a HumanMessage or dict with role 'user'
-            if isinstance(msg, HumanMessage) or (isinstance(msg, dict) and msg.get("role") == "user"):
-                user_message = msg
-                break
-                
-        if not user_message:
-            raise ValueError("No user message found in chat history")
-            
-        # Build prompt
-        prompt_parts = []
-        
-        # Add chat history (last few messages for context)
-        # For simplicity, we'll add the last 3 messages
-        history_messages = state["chat_history"][-3:]  # Last 3 messages
-        if history_messages:
-            prompt_parts.append("Conversation history:")
-            for msg in history_messages:
-                # Handle both dict and message objects
-                if isinstance(msg, dict):
-                    role = msg["role"]
-                    content = msg["content"]
-                elif isinstance(msg, HumanMessage):
-                    role = "user"
-                    content = msg.content
-                elif isinstance(msg, AIMessage):
-                    role = "assistant"
-                    content = msg.content
-                else:
-                    # Fallback
-                    role = "unknown"
-                    content = str(msg)
-                    
-                prompt_parts.append(f"{role}: {content}")
-            prompt_parts.append("")  # Empty line
-            
-        # Add retrieved context if available
-        if state.get("retrieved_context"):
-            prompt_parts.append("Relevant context:")
-            for ctx in state["retrieved_context"][:2]:  # Use top 2 contexts
-                doc = ctx["document"]
-                prompt_parts.append(f"- {doc}")
-            prompt_parts.append("")  # Empty line
-            
-        # Add user's message
-        # Get content from message (handle both dict and object)
-        if isinstance(user_message, dict):
-            user_content = user_message["content"]
-        else:
-            user_content = user_message.content
-        prompt_parts.append(f"User: {user_content}")
-        prompt_parts.append("Assistant:")  # Prompt the assistant to respond
-        
-        prompt = "\n".join(prompt_parts)
+        prompt = build_prompt(state)
         logger.info(f"Respond node: Built prompt:\n{prompt}")
         
-        # Generate response using Ollama
         response_text = generate_text(prompt, model="gpt-oss")
         state["response"] = response_text
         logger.info("Respond node: Generated response successfully")
         
     except Exception as e:
         logger.error(f"Respond node: Error generating response: {e}")
-        state["response"] = "Sorry, I encountered an error while generating a response."
+        state["response"] = "Sorry, I encountered an error."
         
-    return state
+    logger.info("---RESPOND NODE FINISHED---")
+    return {"response": response}
+
+
+async def stream_respond_node(state: AgentState) -> AsyncGenerator[Dict[str, str], None]:
+    """
+    Generates a response stream from the Ollama client.
+    """
+    logger.info("Stream Respond node: Building prompt and streaming response")
+    try:
+        prompt = build_prompt(state)
+        logger.info(f"Stream Respond node: Built prompt:\n{prompt}")
+        
+        # Use the streaming client
+        full_response = ""
+        async for chunk in generate_text_stream(prompt, model="gpt-oss"):
+            if chunk:
+                full_response += chunk
+                logger.info(f"Node yielding chunk: '{chunk}'")
+                yield {"response": chunk}
+        
+        # After the loop, LangGraph will have the full response in the state
+        # No explicit return is needed for the final state if done via yielding
+        
+    except Exception as e:
+        logger.error(f"Stream Respond node: Error generating response: {e}", exc_info=True)
+        yield {"response": "Sorry, I encountered an error while streaming."}
+
 
 # --- Flow Definition ---
 def create_flow() -> StateGraph:
@@ -211,6 +163,29 @@ def create_flow() -> StateGraph:
     app = workflow.compile()
     logger.info("LangGraph flow created successfully")
     return app
+
+def create_streaming_flow() -> StateGraph:
+    """
+    Create a LangGraph flow that supports streaming.
+    """
+    logger.info("Creating LangGraph streaming flow")
+    
+    workflow = StateGraph(AgentState)
+    
+    workflow.add_node("classify", classify_node)
+    workflow.add_node("retrieve", retrieve_node)
+    workflow.add_node("respond_stream", stream_respond_node) # Use the streaming node
+    
+    workflow.add_edge("classify", "retrieve")
+    workflow.add_edge("retrieve", "respond_stream")
+    workflow.add_edge("respond_stream", END)
+    
+    workflow.set_entry_point("classify")
+    
+    app = workflow.compile()
+    logger.info("LangGraph streaming flow created successfully")
+    return app
+
 
 # --- Test function ---
 async def test_flow():

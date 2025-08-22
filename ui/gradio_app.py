@@ -17,7 +17,8 @@ import requests
 import json
 import os
 import uuid
-from typing import List, Tuple, Dict, Any
+import time
+from typing import List, Tuple, Dict, Any, Generator
 
 # --- Configuration ---
 DEFAULT_API_BASE = os.environ.get("API_BASE", "http://localhost:8000")
@@ -59,85 +60,158 @@ def get_history(api_base: str, api_key: str, conversation_id: str) -> List[Dict[
     response.raise_for_status()
     return response.json()["messages"]
 
-# --- UI Logic Functions ---
-def start_new_conversation(api_base_input: str, api_key_input: str) -> Tuple[str, List[Tuple[str, str]]]:
-    """Start a new conversation."""
+def stream_message(api_base: str, api_key: str, conversation_id: str, content: str) -> Generator[str, None, None]:
+    """Send a user message and stream the response via the API using SSE."""
+    url = f"{api_base}/conversations/{conversation_id}/stream"
+    headers = {"X-API-Key": api_key, "Content-Type": "application/json", "Accept": "text/event-stream"}
+    data = {"content": content}
+    
+    print(f"UI_DEBUG: Connecting to {url} for streaming (SSE)...")
+    try:
+        with requests.post(url, headers=headers, json=data, stream=True) as response:
+            print(f"UI_DEBUG: Response status code: {response.status_code}")
+            response.raise_for_status()
+            for line in response.iter_lines():
+                if line:
+                    decoded_line = line.decode('utf-8')
+                    print(f"UI_DEBUG: Received line: '{decoded_line}'")
+                    if decoded_line.startswith('data:'):
+                        try:
+                            # Extract the JSON string after "data: "
+                            json_data = json.loads(decoded_line[5:])
+                            chunk = json_data.get("chunk", "")
+                            if chunk:
+                                print(f"UI_DEBUG: Parsed chunk: '{chunk}'")
+                                yield chunk
+                        except json.JSONDecodeError:
+                            print(f"UI_WARN: Could not decode JSON from line: {decoded_line}")
+                            continue
+    except requests.exceptions.RequestException as e:
+        print(f"UI_ERROR: Request failed: {e}")
+        raise
+    print("UI_DEBUG: Stream finished.")
+
+
+def start_new_conversation(api_base_input: str, api_key_input: str) -> Tuple[str, List, str]:
+    """Start a new conversation and clear the chat."""
     global current_conversation_id, api_base, api_key
     api_base = api_base_input
     api_key = api_key_input
     
     try:
-        current_conversation_id = create_conversation(api_base, api_key)
-        return f"New conversation started with ID: {current_conversation_id}", []
+        user_id = f"gradio-user-{uuid.uuid4()}"
+        current_conversation_id = create_conversation(api_base, api_key, user_id)
+        print(f"UI_DEBUG: Started new conversation: {current_conversation_id}")
+        return f"New conversation started: {current_conversation_id}", [], ""
     except Exception as e:
-        return f"Error creating conversation: {e}", []
+        print(f"UI_ERROR: Could not start new conversation: {e}")
+        return f"Error: {e}", [], ""
 
-def respond(user_message: str, chat_history: List[Tuple[str, str]], api_base_input: str, api_key_input: str) -> Tuple[str, List[Tuple[str, str]]]:
-    """Handle user message and generate response."""
+
+def add_user_message_and_stream_bot_response(
+    user_message: str, 
+    chat_history: List[Dict[str, str]], 
+    api_base_input: str, 
+    api_key_input: str
+) -> Generator[Tuple[str, List[Dict[str, str]]], None, None]:
+    """
+    Adds the user message to the chat, then streams the bot's response.
+    This single function handles the entire interaction flow after the user hits enter.
+    Uses the 'messages' format for Gradio Chatbot.
+    """
     global current_conversation_id, api_base, api_key
     api_base = api_base_input
     api_key = api_key_input
-    
+
+    if not user_message:
+        yield "", chat_history
+        return
+
+    print(f"UI_DEBUG: User message received: '{user_message}'")
+    # Add user message to history
+    chat_history.append({"role": "user", "content": user_message})
+    # Add a placeholder for the bot's response
+    chat_history.append({"role": "assistant", "content": ""})
+    print(f"UI_DEBUG: Yielding initial history: {chat_history}")
+    yield "", chat_history
+
     if not current_conversation_id:
-        return "Please start a new conversation first.", chat_history
-        
+        try:
+            user_id = f"gradio-user-{uuid.uuid4()}"
+            current_conversation_id = create_conversation(api_base, api_key, user_id)
+            print(f"UI_DEBUG: Created new conversation: {current_conversation_id}")
+        except Exception as e:
+            error_message = f"Error starting conversation: {e}"
+            chat_history[-1]["content"] = error_message
+            print(f"UI_ERROR: {error_message}")
+            yield "", chat_history
+            return
+
     try:
-        # Send user message
-        send_message(api_base, api_key, current_conversation_id, user_message)
-        
-        # Get updated history
-        messages = get_history(api_base, api_key, current_conversation_id)
-        
-        # Format chat history for Gradio
-        formatted_history = []
-        for msg in messages:
-            sender = msg["sender"]
-            content = msg["content"]
-            if sender in ["user", "assistant"]:
-                formatted_history.append((content, None if sender == "user" else content))
-                
-        return "", formatted_history
+        # Stream the bot's response
+        response_stream = stream_message(api_base, api_key, current_conversation_id, user_message)
+        for i, chunk in enumerate(response_stream):
+            chat_history[-1]["content"] += chunk
+            print(f"UI_DEBUG: Yielding history with chunk {i}")
+            yield "", chat_history
+    except requests.exceptions.RequestException as e:
+        error_message = f"API Error: {e}"
+        chat_history[-1]["content"] = error_message
+        print(f"UI_ERROR: {error_message}")
+        yield "", chat_history
     except Exception as e:
-        return f"Error sending message or getting history: {e}", chat_history
-
-# --- Gradio Interface ---
-with gr.Blocks(title="Mai-Sale Chat") as demo:
-    gr.Markdown("# Mai-Sale Chat")
-    gr.Markdown("A minimal chat interface for the Mai-Sale RAG chat application.")
+        error_message = f"An unexpected error occurred: {e}"
+        chat_history[-1]["content"] = error_message
+        print(f"UI_ERROR: {error_message}")
+        yield "", chat_history
     
-    # API Configuration
+    print("UI_DEBUG: Bot response function finished.")
+
+
+# --- Gradio UI Layout ---
+with gr.Blocks(theme=gr.themes.Soft()) as demo:
+    gr.Markdown("# Mai-Sale — Gradio Demo")
+    
     with gr.Row():
-        api_base_input = gr.Textbox(label="API Base URL", value=DEFAULT_API_BASE)
-        api_key_input = gr.Textbox(label="API Key", value=DEFAULT_API_KEY, type="password")
-        new_conv_btn = gr.Button("New Conversation")
-        
-    # Status display
-    status_display = gr.Textbox(label="Status", interactive=False)
-    
-    # Chatbot
-    chatbot = gr.Chatbot(label="Chat History")
-    user_input = gr.Textbox(label="Your Message", placeholder="Type your message here...")
-    send_btn = gr.Button("Send")
-    
-    # Event handling
-    new_conv_btn.click(
-        fn=start_new_conversation,
+        with gr.Column(scale=1):
+            gr.Markdown("### Connection")
+            api_base_input = gr.Textbox(label="API Base URL", value=DEFAULT_API_BASE)
+            api_key_input = gr.Textbox(label="API Key", value=DEFAULT_API_KEY, type="password")
+            start_button = gr.Button("Start New Conversation")
+            conversation_status = gr.Textbox(label="Status", interactive=False)
+
+        with gr.Column(scale=4):
+            chatbot = gr.Chatbot(
+                [],
+                elem_id="chatbot",
+                bubble_full_width=False,
+                height=600,
+                label="Chat",
+                type="messages"  # Use the recommended 'messages' type
+            )
+
+            with gr.Row():
+                msg = gr.Textbox(
+                    scale=4,
+                    show_label=False,
+                    placeholder="Enter text and press enter",
+                    container=False,
+                )
+                # Not using the upload button for now
+                # upload_button = gr.UploadButton("📁", file_types=["image", "video", "audio"])
+
+    # --- Event Handlers ---
+    start_button.click(
+        start_new_conversation,
         inputs=[api_base_input, api_key_input],
-        outputs=[status_display, chatbot]
-    )
-    
-    send_btn.click(
-        fn=respond,
-        inputs=[user_input, chatbot, api_base_input, api_key_input],
-        outputs=[user_input, chatbot]
-    )
-    
-    user_input.submit(
-        fn=respond,
-        inputs=[user_input, chatbot, api_base_input, api_key_input],
-        outputs=[user_input, chatbot]
+        outputs=[conversation_status, chatbot, msg]
     )
 
-# --- Main Execution ---
+    msg.submit(
+        add_user_message_and_stream_bot_response,
+        inputs=[msg, chatbot, api_base_input, api_key_input],
+        outputs=[msg, chatbot]
+    )
+
 if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=7860)
+    demo.launch(debug=True)
