@@ -1,0 +1,52 @@
+ Năm nào Tensor cũng bị phàn nàn, nhưng có vài lý do khiến Google muốn tự làm chip cho máy Pixel
+Lại một lần nữa, một thế hệ smartphone Pixel mới ra mắt, và mọi người lại bàn tán về sức mạnh xử lý của con chip Tensor mà Google tự phát triển, giờ đã là Tensor G5, bên trong những chiếc máy Pixel 10 Series. Có một bình luận mà mình để ý: “Giờ Google sang hỏi mua chip Snapdragon của Qualcomm đi là vừa.”
+
+Thật ra năm nào cũng có những bình luận về sức mạnh của con chip bên trong những thế hệ smartphone Pixel thôi. Mà thậm chí đến giờ, khi tuổi tác bắt đầu thể hiện, những chiếc máy như Pixel 6 hay Pixel 7 Pro còn bị phát hiện là vận hành quá nhiệt tới mức hằn cả vệt cháy trên tấm tản nhiệt bên trong máy.
+
+
+Nhưng Google muốn tự chủ việc nghiên cứu phát triển và ứng dụng những chip Tensor G bên trong điện thoại Pixel âu cũng là có lý do cả.
+
+Ai cũng muốn tự chủ con chip trong điện thoại của họ
+
+Hãy nhìn vào Samsung trước, như một ví dụ của việc không thành công trong việc tự chủ chip xử lý bên trong điện thoại. Thật ra những thế hệ chip Exynos không so sánh được về mặt hiệu năng như với những chip Snapdragon trên cùng một đời smartphone Galaxy cũng vì vài lý do, và có những lý do mà Google hoàn toàn không phải đối mặt.
+
+Cụ thể hơn, Samsung có nguyên một mảng Semiconductor gia công bán dẫn, với những tiến trình quang khắc bán dẫn được riêng họ phát triển. Tỷ lệ chip đạt chuẩn trên từng tấm wafer, hay hiệu năng xử lý của từng cụm transistor xử lý logic sẽ quyết định trực tiếp tới sức mạnh của SoC mà Samsung sản xuất.
+
+
+Apple và Google không gặp vấn đề ấy, vì giống hệt như Qualcomm, họ làm việc với TSMC. Vị thế những tập đoàn giá trị vốn hóa cả nghìn tỷ USD trên thị trường chứng khoán, nguồn lực dồi dào cho phép Google cũng như Apple tự nghiên cứu thiết kế những SoC dành cho smartphone, rồi mang bản vẽ thiết kế biến thành photomask quang khắc, gửi sang cho TSMC gia công trên những tiến trình của tập đoàn Đài Loan.
+
+
+Đương nhiên từ khúc bắt đầu thiết kế với bản vẽ cho tới lúc tạo ra photomask quang khắc, quá trình gọi là tape-out, không hề rẻ, và không phải nhà sản xuất smartphone nào cũng đủ tiềm lực để thực hiện. Chi phí để hoàn thiện quá trình thiết kế chip Tensor trên máy Pixel không được tiết lộ, còn có một ví dụ từng được hé lộ vào năm ngoái. Để hoàn thiện quá trình thiết kế, tape-out ra photomask và thử nghiệm xong con chip M3 sản xuất thử, Apple tốn 1 tỷ USD. Google có lẽ cũng không khác nhiều.
+
+
+Tự chủ chip xử lý sẽ đem lại rất nhiều lợi thế, quan trọng nhất là kiểm soát được chi phí sản phẩm và lợi nhuận sản phẩm. Đâu đó từng có thông tin nói rằng Qualcomm Snapdragon 8 Gen 3 có giá 200 USD cho mỗi con chip, tăng tới 20% so với phiên bản 8 Gen 2. Khi lợi nhuận bị ảnh hưởng, việc tự phát triển chip điện thoại sẽ là thứ hãng nào cũng muốn làm, nhưng như đã nói, không phải ai cũng có điều kiện để làm.
+Quảng cáo
+
+
+Gần đây có thêm một cái tên nữa tự phát triển chip điện thoại, đấy là Xiaomi với Xring O1. Nỗ lực này, theo tuyên bố của hãng, tiêu tốn của họ 10 năm nghiên cứu, và kinh phí 14.5 tỷ USD.
+
+Nền tảng của những tính năng AI thử nghiệm
+
+Khi có thể kiểm soát toàn bộ phần cứng cũng như phần mềm, bản thân các kỹ sư của Google cũng sẽ có thể đảm bảo những tính năng, phần mềm và trải nghiệm nói chung của những chiếc điện thoại Pixel trở nên hoàn hảo nhất đối với mọi người.
+
+
+Dễ nhận thấy nhất, là từ thế hệ Pixel 6, chiếc máy đầu tiên được trang bị chip Tensor của Google phát triển, nhiều tính năng phần mềm, đặc biệt là những tính năng machine learning vận hành thông qua cụm nhân xử lý NPU mà Google phát triển riêng cho Tensor chính là thứ từng giúp họ khác biệt so với phần còn lại của thị trường điện thoại Android.
+
+Rồi kế đến, thứ được ứng dụng nhiều hơn hàng ngày đối với mọi người, là những tính năng điện toán hình ảnh để xử lý tín hiệu thô mà cảm biến máy ảnh của Pixel 6 chụp. Rồi cả những tính năng xóa vật thể thông minh gọi là Magic Eraser nữa…
+
+
+Năm nào Tensor cũng bị phàn nàn, nhưng có vài lý do khiến Google muốn tự làm chip cho máy Pixel
+
+Đương nhiên trải nghiệm phần mềm phục vụ người dùng hàng ngày, thứ mà Pixel từng được khen ngợi hết lời, cũng đã bị các hãng khác bắt kịp, thậm chí trong vài khía cạnh còn vượt qua nữa. Nhưng giờ, nền tảng Pixel nói chung và những con chip Tensor nói riêng, cho dù chi tiết tính năng đã thay đổi, nhưng mục tiêu vẫn được giữ nguyên: Tạo ra một nền tảng nơi những ứng dụng dịch vụ và phần mềm phục vụ mọi người.
+
+Hiệu năng CPU không phải là tất cả
+
+Những con số đo đạc hiệu năng của những nhân CPU trên chiếc điện thoại, hay kể cả là máy tính, thông qua những công cụ benchmark phái sinh như Geekbench rốt cuộc không phải lúc nào cũng đại diện cho trải nghiệm sử dụng thiết bị hàng ngày. Những con số ấy có thể dùng để đánh giá khả năng phát triển kiến trúc chip xử lý của các hãng.
+
+
+Còn khi sử dụng hàng ngày, mọi người sẽ chỉ lo tới việc dùng lâu máy có nóng hay không, có khựng giật hay không, tình trạng thermal throttle giảm xung CPU ảnh hưởng ra sao tới các tác vụ trong các ứng dụng anh em sử dụng hàng ngày. Những bài benchmark chỉ mô tả một phần của toàn bộ trải nghiệm.
+
+
+Còn trong khi đó, trên SoC trang bị trong chiếc điện thoại của anh em, còn vô vàn những cụm nhân xử lý khác chứ chẳng riêng gì CPU. Từ GPU xử lý đồ họa cho tới NPU xử lý machine learning, hay cả bộ xử lý tín hiệu hình ảnh và cả cụm nhân bảo mật. Kiểm soát hoàn toàn mọi khía cạnh này có thể giúp Google tạo ra những chiếc máy Pixel bảo mật hơn, vòng đời nâng cấp những phiên bản Android mới dài hơn, cùng nhiều khía cạnh khác quan trọng chẳng kém gì sức mạnh xử lý của CPU hay GPU.
+
+Thành ra, anh em hãy cứ yên tâm, là Google sẽ không từ bỏ nỗ lực phát triển chip Tensor cho điện thoại Pixel đâu.

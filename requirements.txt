@@ -1,0 +1,7 @@
+langgraph
+# Thêm các phụ thuộc khác tại đây, ví dụ:
+# uv
+# uvicorn
+# fastapi
+gradio
+chromadb
