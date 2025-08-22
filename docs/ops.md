@@ -2,6 +2,11 @@
 
 # Vận hành & Monitoring (gọn, hành động)
 
+## Health Checks
+- Liveness: `/healthz` endpoint (simple health check)
+- Readiness: `/ready` endpoint (checks DB, Ollama, ChromaDB connectivity)
+- Use these endpoints for k8s liveness/readiness probes and load balancer health checks.
+
 ## Metrics & Observability
 - Export Prometheus metrics: request_latency, embedding_latency, vector_query_time, queue_length, DLQ_size.
 - Structured logs (JSON) with request_id, conversation_id, user_id.
@@ -16,6 +21,20 @@
 - Daily DB snapshot + nightly Chroma snapshot; retention: 30/90 days (configurable).
 - Weekly restore test in staging to validate backups.
 - Run reconciliation script after restore to re-link messages ↔ vectors.
+
+### Backup Commands
+```bash
+# DB snapshot (SQLite example)
+cp ./database/sqlite.db "/backups/sqlite-$(date +%F).db"
+
+# DB snapshot (Postgres example)
+pg_dump -Fc "$DATABASE_URL" > "/backups/db-$(date +%F).dump"
+
+# ChromaDB snapshot
+tar czf "/backups/chroma-$(date +%F).tgz" ./database/chroma_db
+
+# Note: Always backup both DB and Chroma together for consistency
+```
 
 ## Deployment & Rollout
 - Docker images with immutable tags; use k8s readiness/liveness probes and rolling or canary deploys.
@@ -46,6 +65,10 @@ python scripts/requeue_dlq.py --limit 100
 
 # Pre-flight: verify Ollama and models
 uv run scripts/check_ollama.py --probe
+
+# Health checks
+curl http://localhost:8000/healthz
+curl http://localhost:8000/ready
 ```
 
 ## Ownership

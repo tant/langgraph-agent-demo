@@ -3,6 +3,8 @@
 
 **Multi-tenant chat with conversation history, retrieval-augmented responses (RAG), and simple token-based auth.**
 
+**Phase 1 Status: COMPLETED** | **Latest Release: v0.1.0**
+
 ---
 
 ## 📚 Project Index & Quick Links
@@ -59,6 +61,29 @@ uv python install 3.12
 	uv run scripts/index_knowledge.py --source knowledge/ --collection conversations_dev
 	```
   Flags: `--clear` to reset the collection before indexing. The script prints basic stats when done.
+
+4. **Test API (optional):**
+   After starting the backend, you can test the API with curl:
+   ```bash
+   # Set your API key
+   API_KEY="default-dev-key"
+   
+   # Create a conversation
+   curl -X POST "http://localhost:8000/conversations" \
+     -H "X-API-Key: $API_KEY" \
+     -H "Content-Type: application/json" \
+     -d '{"user_id": "test-user"}'
+   
+   # Send a message (replace CONVERSATION_ID with the ID from the previous response)
+   curl -X POST "http://localhost:8000/conversations/CONVERSATION_ID/messages" \
+     -H "X-API-Key: $API_KEY" \
+     -H "Content-Type: application/json" \
+     -d '{"content": "Hello, what can you tell me about Pixel phones?"}'
+   
+   # Get conversation history (replace CONVERSATION_ID)
+   curl -X GET "http://localhost:8000/conversations/CONVERSATION_ID/history" \
+     -H "X-API-Key: $API_KEY"
+   ```
 
 ---
 
@@ -186,6 +211,11 @@ Ollama commonly runs locally — TLS to Ollama is optional when Ollama is localh
 
 ## 📖 More Details
 See the `docs/` folder for in-depth documentation on all aspects of the project.
+
+### Phase 1 Deliverables
+- [`docs/phase1-summary.md`](docs/phase1-summary.md): High-level summary of Phase 1 achievements
+- [`docs/phase1-retro.md`](docs/phase1-retro.md): Detailed review and retrospective
+- [`docs/plan-phase1.md`](docs/plan-phase1.md): Original Phase 1 plan and task breakdown
 
 ## 📄 License
 

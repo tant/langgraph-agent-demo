@@ -1,9 +1,11 @@
 langgraph
-# Thêm các phụ thuộc khác tại đây, ví dụ:
-# uv
-# uvicorn
-# fastapi
+fastapi
+uvicorn
 gradio
 chromadb
 requests
 rich>=13.7
+sqlalchemy[asyncio]>=2.0.0
+aiosqlite
+pytest
+pytest-asyncio

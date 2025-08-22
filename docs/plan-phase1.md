@@ -99,6 +99,8 @@ AC:
 - Chạy index in ra thống kê, data xuất hiện trong `database/chroma_db/`.
 - Retrieval dùng được dữ liệu index trong M5 smoke test.
 
+**Note for Future Phases:** Consider separating knowledge base and conversation history into different ChromaDB collections for better data management, query optimization, and security. Currently, both are stored in the same collection `conversations_dev`.
+
 ### T-09 Security cơ bản
 - Header `X-API-Key` bắt buộc (trừ health/version), list token từ env (ví dụ `X_API_KEY_ADMIN` + `X_API_KEYS` dạng CSV).
 - CORS hạn chế (dev: cho localhost). Log không in PII.
