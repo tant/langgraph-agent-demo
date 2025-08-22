@@ -5,3 +5,5 @@ langgraph
 # fastapi
 gradio
 chromadb
+requests
+rich>=13.7

@@ -43,7 +43,23 @@ tar czf "/backups/chroma-$(date +%F).tgz" ./database/chroma_db
 
 # requeue DLQ (example)
 python scripts/requeue_dlq.py --limit 100
+
+# Pre-flight: verify Ollama and models
+uv run scripts/check_ollama.py --probe
 ```
 
 ## Ownership
 - On-call: owner for DLQ/embedding failures; specify pager duty or contact list in runbook.
+
+## Additional Ops commands (indexing)
+```bash
+# Index knowledge into Chroma (prod example)
+uv run scripts/index_knowledge.py --source knowledge/ --collection conversations_prod
+
+# Danger: reset collection before indexing
+uv run scripts/index_knowledge.py --source knowledge/ --collection conversations_prod --clear
+```
+
+### Indexing notes
+- Always snapshot `./database/chroma_db/` before running with `--clear`.
+- Consider running indexing in staging first and verifying retrieval quality before promoting.

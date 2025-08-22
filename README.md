@@ -40,6 +40,12 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 uv python install 3.12
 ```
 
+0. **Check Ollama & models:**
+  ```bash
+  uv run scripts/check_ollama.py --probe
+  ```
+  Ensures Ollama is reachable and required models (`gpt-oss`, `bge-m3`) are installed and responding.
+
 1. **Run backend:**
 	```bash
 	uv run uvicorn agent.main:app --reload --host 0.0.0.0 --port 8000
@@ -52,6 +58,7 @@ uv python install 3.12
 	```bash
 	uv run scripts/index_knowledge.py --source knowledge/ --collection conversations_dev
 	```
+  Flags: `--clear` to reset the collection before indexing. The script prints basic stats when done.
 
 ---
 
@@ -60,6 +67,7 @@ uv python install 3.12
 - To index knowledge: `uv run --no-project --with chromadb --with requests --with tqdm --with python-dotenv scripts/index_knowledge.py --source knowledge/ --collection conversations_dev`
 - ChromaDB sẽ lưu tự động vào thư mục `database/chroma_db/` (PersistentClient)
 - Backup Chroma folder cùng DB metadata nếu dùng local.
+- Check Ollama status & models: `uv run scripts/check_ollama.py --probe`
 - See `docs/` for detailed design, security, and operational notes.
 
 ---
@@ -84,11 +92,36 @@ uv run --no-project tools/one_off.py
 
 ---
 
+## 🧰 Scripts
+
+- `scripts/check_ollama.py` — Verify Ollama availability and required models.
+  - Examples:
+    - `uv run scripts/check_ollama.py` (presence)
+    - `uv run scripts/check_ollama.py --probe` (call generate/embeddings to verify runtime)
+    - `uv run scripts/check_ollama.py --json` (machine-readable)
+
+- `scripts/index_knowledge.py` — Index files from a folder into ChromaDB for retrieval.
+  - Default args: `--source knowledge/` and `--collection conversations_dev`
+  - Useful flags: `--clear` to drop and recreate the collection before indexing
+  - Env vars:
+    - `CHROMA_PATH` (default `./database/chroma_db/`) — persistent path for Chroma
+    - `OLLAMA_EMBEDDING_URL` (default `http://localhost:11434/api/embeddings`)
+    - `EMBEDDING_MODEL` (default `bge-m3`)
+    - `CHUNK_SIZE` (default `400` words — simple whitespace chunking)
+  - Behavior: reads files, splits to chunks, requests embeddings via Ollama, upserts to Chroma with ids like `{filename}#chunk_{i}` and prints stats.
+
+---
+
 ## 🌐 Environment Variables
 
 - `OLLAMA_HOST` (default: localhost)
 - `OLLAMA_PORT` (default: 11434)
+  - Used by `scripts/check_ollama.py` to target the Ollama server.
 - `CHROMA_PATH` (default: ./database/chroma_db)
+  - Used by `scripts/index_knowledge.py` for Chroma persistent path.
+- `OLLAMA_EMBEDDING_URL` (default: http://localhost:11434/api/embeddings)
+- `EMBEDDING_MODEL` (default: bge-m3)
+- `CHUNK_SIZE` (default: 400)
 - `DATABASE_URL` (sqlite:///./database/sqlite.db or Postgres URL)
 - `REDIS_URL` (optional — production only; local dev can run in no-Redis mode)
 - `X_API_KEY_ADMIN` (admin token for management endpoints)

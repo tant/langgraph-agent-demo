@@ -25,9 +25,15 @@ cp -n .env.local.example .env.local 2>/dev/null || true
 3) Đảm bảo Ollama đang chạy và model đã được kéo về:
 
 ```bash
+# Cách 1: dùng tiện ích sẵn có (khuyến nghị)
+uv run scripts/check_ollama.py --probe
+
+# Cách 2: thủ công
 ollama ls
 # Kiểm tra các model cần: gpt-oss (gen), bge-m3 (embeddings)
 ```
+
+Mẹo: nếu thiếu model, chạy `ollama pull gpt-oss` và/hoặc `ollama pull bge-m3`.
 
 4) Chạy backend (FastAPI) bằng uv + uvicorn:
 
@@ -40,6 +46,20 @@ uv run uvicorn agent.main:app --reload --host 0.0.0.0 --port 8000
 ```bash
 uv run scripts/index_knowledge.py --source knowledge/ --collection conversations_dev
 ```
+
+Tùy chọn:
+
+- Xóa và tạo lại collection trước khi index:
+```bash
+uv run scripts/index_knowledge.py --source knowledge/ --collection conversations_dev --clear
+```
+
+Biến môi trường ảnh hưởng:
+
+- `CHROMA_PATH` (mặc định `./database/chroma_db/`) — đường dẫn lưu trữ Chroma
+- `OLLAMA_EMBEDDING_URL` (mặc định `http://localhost:11434/api/embeddings`)
+- `EMBEDDING_MODEL` (mặc định `bge-m3`)
+- `CHUNK_SIZE` (mặc định `400`, chia theo số từ — chunking đơn giản)
 
 6) Chạy Gradio UI (tùy chọn) ở terminal khác:
 
