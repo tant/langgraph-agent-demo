@@ -153,3 +153,7 @@ Ollama commonly runs locally — TLS to Ollama is optional when Ollama is localh
 
 ## 📖 More Details
 See the `docs/` folder for in-depth documentation on all aspects of the project.
+
+## 📄 License
+
+This project is licensed under the MIT License. See the `LICENSE` file for details.
