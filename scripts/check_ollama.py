@@ -102,10 +102,13 @@ def resolve_urls(host: str, port: int) -> Dict[str, str]:
     }
 
 
-def check_server(base_url: str, timeout: float = 3.0) -> Dict[str, Any]:
-    url = f"{base_url}/api/tags"
+def check_server(tags_url: str, timeout: float = 3.0) -> Dict[str, Any]:
+    """Check the /api/tags endpoint (tags_url should be a full URL).
+
+    Returns dict with keys: ok, models, error.
+    """
     try:
-        resp = requests.get(url, timeout=timeout)
+        resp = requests.get(tags_url, timeout=timeout)
         resp.raise_for_status()
         data = resp.json()
         # Normalize model names
@@ -115,7 +118,7 @@ def check_server(base_url: str, timeout: float = 3.0) -> Dict[str, Any]:
         return {"ok": False, "models": [], "error": str(e)}
     except ValueError:
         # Non-JSON response
-        return {"ok": False, "models": [], "error": "Invalid response from /api/tags"}
+        return {"ok": False, "models": [], "error": f"Invalid response from {tags_url}"}
 
 
 def model_present(installed: List[str], name: str) -> bool:
@@ -127,8 +130,9 @@ def model_present(installed: List[str], name: str) -> bool:
     return False
 
 
-def probe_embedding(base_url: str, model: str, timeout: float = 10.0) -> bool:
-    url = f"{base_url}/api/embeddings"
+def probe_embedding(embeddings_url: str, model: str, timeout: float = 10.0) -> bool:
+    """POST a small embedding request to embeddings_url (full URL)."""
+    url = embeddings_url
     payload = {"model": model, "prompt": "ping"}
     try:
         resp = requests.post(url, json=payload, timeout=timeout)
@@ -142,8 +146,9 @@ def probe_embedding(base_url: str, model: str, timeout: float = 10.0) -> bool:
         return False
 
 
-def probe_generate(base_url: str, model: str, timeout: float = 20.0) -> bool:
-    url = f"{base_url}/api/generate"
+def probe_generate(generate_url: str, model: str, timeout: float = 20.0) -> bool:
+    """POST a small generate request to generate_url (full URL)."""
+    url = generate_url
     payload = {"model": model, "prompt": "ping", "stream": False}
     try:
         resp = requests.post(url, json=payload, timeout=timeout)
@@ -196,11 +201,11 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     console = Console()
-    base_url = get_base_url(args.host, args.port)
     urls = resolve_urls(args.host, args.port)
     required = [m.strip() for m in args.models.split(",") if m.strip()]
 
-    server = check_server(urls["base"], timeout=args.timeout)
+    # Use the resolved tags URL (which may come from env or be built from host/port)
+    server = check_server(urls["tags"], timeout=args.timeout)
     if not server["ok"]:
         if args.json:
             print(json.dumps({
@@ -240,13 +245,13 @@ def main() -> int:
 
     if args.json:
         print(json.dumps({
-            "server": {"ok": True, "base_url": base_url},
+            "server": {"ok": True, "base_url": urls["base"], "tags_url": urls["tags"]},
             "installed": installed,
             "models": results,
             "summary": {"all_present": all_present, "all_probes_ok": (all_probes_ok if args.probe else None)},
         }, ensure_ascii=False))
     else:
-        console.print(f"[green]Ollama reachable[/green] at {base_url}")
+        console.print(f"[green]Ollama reachable[/green] at {urls['base']}")
         table = Table(title="Model readiness", box=box.SIMPLE_HEAVY)
         table.add_column("Model", justify="left")
         table.add_column("Installed", justify="center")
