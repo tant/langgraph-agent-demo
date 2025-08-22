@@ -61,6 +61,31 @@ Biến môi trường ảnh hưởng:
 - `EMBEDDING_MODEL` (mặc định `bge-m3`)
 - `CHUNK_SIZE` (mặc định `400`, chia theo số từ — chunking đơn giản)
 
+Thêm (mới): Ollama endpoint configuration
+
+- `OLLAMA_BASE_URL` (ví dụ `http://localhost:11434` or `http://sstc-llm:11434`) — base URL cho Ollama. Nếu đặt, các endpoint phía dưới mặc định sẽ được build từ giá trị này.
+- `OLLAMA_GENERATE_URL` — URL đầy đủ cho endpoint generate (ví dụ `${OLLAMA_BASE_URL}/api/generate`).
+- `OLLAMA_EMBEDDING_URL` — URL đầy đủ cho endpoint embeddings (ví dụ `${OLLAMA_BASE_URL}/api/embeddings`).
+- `OLLAMA_TAGS_URL` — URL đầy đủ cho endpoint tags (ví dụ `${OLLAMA_BASE_URL}/api/tags`).
+- `DEFAULT_GENERATE_MODEL` — model mặc định cho generate (mặc định `gpt-oss`).
+- `DEFAULT_EMBEDDING_MODEL` — model mặc định cho embeddings (mặc định `bge-m3`).
+
+Ghi chú:
+- `scripts/check_ollama.py` và `agent/ollama_client.py` sẽ tự nạp `.env.local` (nếu tồn tại) trước khi xây URL. Điều này cho phép bạn cấu hình host cụ thể (ví dụ `sstc-llm`) trong `.env.local` mà không cần export thủ công trong shell.
+- Nếu bạn muốn ghi đè giá trị tạm thời cho một lần chạy, export biến trước khi gọi `uv run`, ví dụ:
+
+```bash
+export OLLAMA_BASE_URL="http://sstc-llm:11434"
+uv run scripts/check_ollama.py --probe
+```
+
+Hoặc export chỉ endpoint embeddings (không cần base):
+
+```bash
+export OLLAMA_EMBEDDING_URL="http://sstc-llm:11434/api/embeddings"
+uv run scripts/check_ollama.py --probe
+```
+
 6) Chạy Gradio UI (tùy chọn) ở terminal khác:
 
 ```bash

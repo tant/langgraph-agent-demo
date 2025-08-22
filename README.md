@@ -147,6 +147,14 @@ uv run --no-project tools/one_off.py
 - `OLLAMA_EMBEDDING_URL` (default: http://localhost:11434/api/embeddings)
 - `EMBEDDING_MODEL` (default: bge-m3)
 - `CHUNK_SIZE` (default: 400)
+
+Additional Ollama configuration (new):
+
+- `OLLAMA_BASE_URL` — base URL for Ollama (e.g. `http://localhost:11434` or `http://sstc-llm:11434`).
+- `OLLAMA_GENERATE_URL`, `OLLAMA_TAGS_URL`, `OLLAMA_EMBEDDING_URL` — full endpoint URLs that override the base when present.
+- `DEFAULT_GENERATE_MODEL`, `DEFAULT_EMBEDDING_MODEL` — defaults for generate/embedding calls.
+
+Note: `scripts/check_ollama.py` and `agent/ollama_client.py` will load `.env.local` (if present) automatically to pick up these variables; you can also export them in your shell to override for a single run.
 - `DATABASE_URL` (sqlite:///./database/sqlite.db or Postgres URL)
 - `REDIS_URL` (optional — production only; local dev can run in no-Redis mode)
 - `X_API_KEY_ADMIN` (admin token for management endpoints)

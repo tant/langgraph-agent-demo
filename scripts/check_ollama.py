@@ -40,9 +40,66 @@ from rich.table import Table
 from rich import box
 
 
+def load_dotenv_if_exists(filename: str = ".env.local") -> None:
+    """Load simple KEY=VALUE lines from a dotenv-style file into os.environ.
+
+    Ignores blank lines, comments starting with '#', and fenced code markers like ```.
+    Expands ${VAR} using existing environment (or earlier keys in the file if ordered).
+    """
+    # search likely locations: cwd and script parent dir
+    candidates = [os.path.join(os.getcwd(), filename), os.path.join(os.path.dirname(__file__), "..", filename)]
+    for path in candidates:
+        try:
+            full = os.path.abspath(path)
+            if not os.path.exists(full):
+                continue
+            with open(full, "r", encoding="utf-8") as fh:
+                for raw in fh:
+                    line = raw.strip()
+                    if not line or line.startswith("#") or line.startswith("```"):
+                        continue
+                    if "=" not in line:
+                        continue
+                    k, v = line.split("=", 1)
+                    k = k.strip()
+                    v = v.strip()
+                    # strip surrounding quotes if present
+                    if (v.startswith('"') and v.endswith('"')) or (v.startswith("'") and v.endswith("'")):
+                        v = v[1:-1]
+                    # expand environment variables using any already-loaded env
+                    v = os.path.expandvars(v)
+                    # don't override existing env unless not set
+                    if k not in os.environ:
+                        os.environ[k] = v
+            # stop after first found file
+            return
+        except Exception:
+            # best-effort loader; ignore errors
+            return
+
+# Load .env.local early so parse_args can read defaults from it
+load_dotenv_if_exists()
+
+
 def get_base_url(host: str, port: int) -> str:
     scheme = "http"  # Ollama typically runs without TLS locally
     return f"{scheme}://{host}:{port}"
+
+
+def resolve_urls(host: str, port: int) -> Dict[str, str]:
+    """Resolve effective URLs for tags/generate/embeddings from env or host/port."""
+    base_env = os.environ.get("OLLAMA_BASE_URL")
+    if base_env:
+        base = base_env
+    else:
+        base = get_base_url(host, port)
+
+    return {
+        "base": base,
+        "tags": os.environ.get("OLLAMA_TAGS_URL", f"{base}/api/tags"),
+        "generate": os.environ.get("OLLAMA_GENERATE_URL", f"{base}/api/generate"),
+        "embeddings": os.environ.get("OLLAMA_EMBEDDING_URL", f"{base}/api/embeddings"),
+    }
 
 
 def check_server(base_url: str, timeout: float = 3.0) -> Dict[str, Any]:
@@ -140,18 +197,19 @@ def main() -> int:
     args = parse_args()
     console = Console()
     base_url = get_base_url(args.host, args.port)
+    urls = resolve_urls(args.host, args.port)
     required = [m.strip() for m in args.models.split(",") if m.strip()]
 
-    server = check_server(base_url, timeout=args.timeout)
+    server = check_server(urls["base"], timeout=args.timeout)
     if not server["ok"]:
         if args.json:
             print(json.dumps({
-                "server": {"ok": False, "base_url": base_url, "error": server["error"]},
+                "server": {"ok": False, "base_url": urls["base"], "error": server["error"]},
                 "models": [],
                 "summary": {"all_present": False, "all_probes_ok": False},
             }))
         else:
-            console.print(f"[red]Ollama UNREACHABLE[/red] at {base_url}: {server['error']}")
+            console.print(f"[red]Ollama UNREACHABLE[/red] at {urls['base']}: {server['error']}")
         return 1
 
     installed = server["models"]
@@ -168,9 +226,9 @@ def main() -> int:
         elif args.probe:
             # Heuristic: treat bge models as embedding-capable, others as generate-capable
             if name.lower().startswith("bge"):
-                probe_ok = probe_embedding(base_url, name)
+                probe_ok = probe_embedding(urls["embeddings"], name)
             else:
-                probe_ok = probe_generate(base_url, name)
+                probe_ok = probe_generate(urls["generate"], name)
             if not probe_ok:
                 all_probes_ok = False
 

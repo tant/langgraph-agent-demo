@@ -14,19 +14,64 @@ This module provides adapters to interact with the Ollama API:
 
 import os
 import requests
-from typing import List, Optional, Dict, Any, Generator
+from typing import List, Optional, Dict, Any, AsyncGenerator
+import pathlib
+
+
+def _load_dotenv_simple(filename: str = ".env.local") -> None:
+    """Lightweight dotenv loader: loads KEY=VALUE from file into os.environ if not set.
+
+    Handles comment lines, fenced code blocks, and ${VAR} expansion using current os.environ.
+    """
+    # search current working dir and repo root (one level up from this file)
+    candidates = [pathlib.Path.cwd() / filename, pathlib.Path(__file__).parent.parent / filename]
+    for p in candidates:
+        try:
+            full = p.resolve()
+            if not full.exists():
+                continue
+            with full.open("r", encoding="utf-8") as fh:
+                for raw in fh:
+                    line = raw.strip()
+                    if not line or line.startswith("#") or line.startswith("```"):
+                        continue
+                    if "=" not in line:
+                        continue
+                    k, v = line.split("=", 1)
+                    k = k.strip()
+                    v = v.strip()
+                    if (v.startswith('"') and v.endswith('"')) or (v.startswith("'") and v.endswith("'")):
+                        v = v[1:-1]
+                    v = os.path.expandvars(v)
+                    if k not in os.environ:
+                        os.environ[k] = v
+            return
+        except Exception:
+            return
+
+
+# Load .env.local early so env-based config below picks up values
+_load_dotenv_simple()
 import logging
 import json
 import httpx
 
 # --- Configuration ---
+# Allow configuring Ollama endpoints via environment variables.
+# Priority (highest -> lowest): specific URL env (e.g. OLLAMA_GENERATE_URL) -> OLLAMA_BASE_URL -> OLLAMA_HOST/OLLAMA_PORT
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "localhost")
 OLLAMA_PORT = int(os.environ.get("OLLAMA_PORT", 11434))
-OLLAMA_BASE_URL = f"http://{OLLAMA_HOST}:{OLLAMA_PORT}"
+_DEFAULT_BASE = f"http://{OLLAMA_HOST}:{OLLAMA_PORT}"
+
+# You can set a full base URL, or individual endpoint URLs for more control.
+OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", _DEFAULT_BASE)
+OLLAMA_GENERATE_URL = os.environ.get("OLLAMA_GENERATE_URL", f"{OLLAMA_BASE_URL}/api/generate")
+OLLAMA_EMBEDDING_URL = os.environ.get("OLLAMA_EMBEDDING_URL", f"{OLLAMA_BASE_URL}/api/embeddings")
+OLLAMA_TAGS_URL = os.environ.get("OLLAMA_TAGS_URL", f"{OLLAMA_BASE_URL}/api/tags")
 
 # Default models
-DEFAULT_GENERATE_MODEL = "gpt-oss"
-DEFAULT_EMBEDDING_MODEL = "bge-m3"
+DEFAULT_GENERATE_MODEL = os.environ.get("DEFAULT_GENERATE_MODEL", "gpt-oss")
+DEFAULT_EMBEDDING_MODEL = os.environ.get("DEFAULT_EMBEDDING_MODEL", "bge-m3")
 
 # --- Logging ---
 logger = logging.getLogger(__name__)
@@ -49,12 +94,12 @@ def generate_text(prompt: str, model: str = DEFAULT_GENERATE_MODEL, **kwargs) ->
         requests.RequestException: If there's an error with the HTTP request.
         ValueError: If the response is invalid or missing expected fields.
     """
-    url = f"{OLLAMA_BASE_URL}/api/generate"
+    url = OLLAMA_GENERATE_URL
     payload = {
         "model": model,
         "prompt": prompt,
-        "stream": False,  # Ensure streaming is off for simple response
-        **kwargs  # Allow additional options
+        "stream": False,
+        **kwargs,
     }
     
     logger.info(f"Calling Ollama generate API with model {model}")
@@ -75,11 +120,11 @@ def generate_text(prompt: str, model: str = DEFAULT_GENERATE_MODEL, **kwargs) ->
         logger.error(f"Invalid response from Ollama generate API: {e}")
         raise
 
-async def generate_text_stream(prompt: str, model: str = "gpt-oss") -> Generator[str, None, None]:
+async def generate_text_stream(prompt: str, model: str = "gpt-oss") -> AsyncGenerator[str, None]:
     """
     Generates text from a prompt using the Ollama API with streaming.
     """
-    url = f"{OLLAMA_BASE_URL}/api/generate"
+    url = OLLAMA_GENERATE_URL
     data = {"model": model, "prompt": prompt, "stream": True}
     
     logger.info(f"Calling Ollama generate API with streaming for model {model}")
@@ -117,11 +162,8 @@ def get_embedding(text: str, model: str = DEFAULT_EMBEDDING_MODEL) -> List[float
         requests.RequestException: If there's an error with the HTTP request.
         ValueError: If the response is invalid or missing expected fields.
     """
-    url = f"{OLLAMA_BASE_URL}/api/embeddings"
-    payload = {
-        "model": model,
-        "prompt": text
-    }
+    url = OLLAMA_EMBEDDING_URL
+    payload = {"model": model, "prompt": text}
     
     logger.info(f"Calling Ollama embeddings API with model {model}")
     try:
@@ -168,3 +210,13 @@ def test_embedding():
     except Exception as e:
         print(f"Embedding test failed: {e}")
         raise
+
+
+if __name__ == "__main__":
+    # Simple local debug helper to print resolved Ollama URLs
+    print("OLLAMA_BASE_URL:", OLLAMA_BASE_URL)
+    print("OLLAMA_GENERATE_URL:", OLLAMA_GENERATE_URL)
+    print("OLLAMA_EMBEDDING_URL:", OLLAMA_EMBEDDING_URL)
+    print("OLLAMA_TAGS_URL:", OLLAMA_TAGS_URL)
+    print("DEFAULT_GENERATE_MODEL:", DEFAULT_GENERATE_MODEL)
+    print("DEFAULT_EMBEDDING_MODEL:", DEFAULT_EMBEDDING_MODEL)
