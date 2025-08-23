@@ -133,11 +133,38 @@ async def generate_text_stream(prompt: str, model: str = "gpt-oss") -> AsyncGene
         async with httpx.AsyncClient(timeout=60.0) as client:
             async with client.stream("POST", url, json=data) as response:
                 response.raise_for_status()
-                async for chunk in response.aiter_bytes():
-                    if chunk:
-                        # Decode and parse the JSON chunk
-                        json_chunk = json.loads(chunk.decode("utf-8"))
-                        yield json_chunk.get("response", "")
+                # Buffer text and parse line-delimited JSON or individual JSON objects
+                buffer = ""
+                async for text_chunk in response.aiter_text():
+                    if not text_chunk:
+                        continue
+                    buffer += text_chunk
+                    # Try to split by newlines which many streaming endpoints use
+                    while "\n" in buffer:
+                        line, buffer = buffer.split("\n", 1)
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            json_chunk = json.loads(line)
+                            yield json_chunk.get("response", "")
+                        except json.JSONDecodeError:
+                            # If the line is not valid JSON, try to parse the accumulated buffer as JSON
+                            try:
+                                json_chunk = json.loads(line)
+                                yield json_chunk.get("response", "")
+                            except Exception:
+                                # Give up on this line; yield raw fallback so UI can at least show text
+                                yield line
+                # After the stream finishes, try to parse any remaining buffer
+                if buffer:
+                    rem = buffer.strip()
+                    if rem:
+                        try:
+                            json_chunk = json.loads(rem)
+                            yield json_chunk.get("response", "")
+                        except Exception:
+                            yield rem
     except httpx.ReadTimeout:
         logger.error(f"Ollama request timed out after 60 seconds for model {model}.")
         yield "[ERROR: The request to the AI model timed out. The model might be busy or unavailable. Please try again later.]"

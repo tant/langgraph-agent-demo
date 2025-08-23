@@ -2,7 +2,18 @@ import os
 import logging
 import uuid
 from fastapi import FastAPI, Request, HTTPException, Depends, BackgroundTasks
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse
+try:
+    # Prefer sse-starlette if installed for robust SSE handling
+    from sse_starlette.sse import EventSourceResponse
+except Exception:
+    # Fallback to Starlette's EventSourceResponse if available
+    try:
+        from starlette.responses import EventSourceResponse
+    except Exception:
+        EventSourceResponse = None
+import json
+import asyncio
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Optional, List
@@ -186,7 +197,7 @@ async def create_conversation_endpoint(request: CreateConversationRequest):
         logger.error(f"Error creating conversation: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
-@app.post("/conversations/{conversation_id}/stream", response_class=StreamingResponse)
+@app.post("/conversations/{conversation_id}/stream")
 async def stream_message_endpoint(conversation_id: str, request: CreateMessageRequest, background_tasks: BackgroundTasks):
     """
     Create a new message and stream the assistant's response.
@@ -225,18 +236,71 @@ async def stream_message_endpoint(conversation_id: str, request: CreateMessageRe
                     "retrieved_context": None, "response": None, "stream": True,
                 }
 
-                # Create and invoke the streaming flow
-                flow = create_streaming_flow()
+                # We'll run the classify/retrieve nodes directly and then stream from
+                # the streaming response node. This ensures per-chunk yields from
+                # `generate_text_stream` are forwarded immediately to the SSE client.
+                from agent.langgraph_flow import (
+                    classify_node,
+                    retrieve_node,
+                    stream_respond_node,
+                )
+
+                logger.info(f"[{conversation_id}] Running classify/retrieve then streaming node directly")
+
+                # Emit an initial debug SSE payload so clients can detect the open stream
+                initial_payload = json.dumps({"debug": "stream-open"})
+                init_sse = f"data: {initial_payload}\n\n"
+                logger.info(f"[{conversation_id}] Yielding initial debug SSE: {init_sse.strip()}")
+                yield init_sse
+                # allow the event loop and server to flush this chunk
+                await asyncio.sleep(0)
+
+                # Run classifier node to decide if we should retrieve
+                try:
+                    classify_out = await classify_node(initial_state)
+                    logger.info(f"[{conversation_id}] classify_out={classify_out}")
+                except Exception as e:
+                    logger.error(f"[{conversation_id}] classify_node failed: {e}", exc_info=True)
+                    classify_out = {"need_retrieval": False}
+
+                # Optionally run retrieve node
+                try:
+                    if classify_out.get("need_retrieval"):
+                        await retrieve_node(initial_state)
+                        logger.info(f"[{conversation_id}] retrieve populated state.retrieved_context")
+                except Exception as e:
+                    logger.error(f"[{conversation_id}] retrieve_node failed: {e}", exc_info=True)
+
+                # Stream directly from the streaming node
                 chunk_index = 0
-                async for response_chunk_dict in flow.astream(initial_state):
-                    if "response" in response_chunk_dict:
-                        response_chunk = response_chunk_dict["response"]
-                        # SSE format: "data: {json_string}\n\n"
-                        sse_data = f"data: {response_chunk}\n\n"
+                try:
+                    async for chunk in stream_respond_node(initial_state):
+                        # chunk is expected to be a dict like {'response': '...'} or a string
+                        logger.info(f"[{conversation_id}] streaming node yielded: {chunk!r}")
+                        # Normalize
+                        response_chunk = None
+                        if isinstance(chunk, dict) and "response" in chunk:
+                            response_chunk = chunk["response"]
+                        elif isinstance(chunk, str):
+                            response_chunk = chunk
+
+                        if response_chunk is None:
+                            logger.info(f"[{conversation_id}] streaming node yielded non-response: {chunk!r}")
+                            continue
+
+                        try:
+                            payload = json.dumps({"chunk": response_chunk})
+                        except Exception:
+                            payload = json.dumps({"chunk": str(response_chunk)})
+                        sse_data = f"data: {payload}\n\n"
                         logger.info(f"[{conversation_id}] Yielding chunk {chunk_index}: {sse_data.strip()}")
                         yield sse_data
+                        # give the event loop a chance to schedule IO/flush
+                        await asyncio.sleep(0)
                         full_response += response_chunk
                         chunk_index += 1
+                except Exception as e:
+                    logger.error(f"[{conversation_id}] Error in streaming node: {e}", exc_info=True)
             
             except Exception as e:
                 logger.error(f"[{conversation_id}] Error during stream generation: {e}", exc_info=True)
@@ -256,13 +320,20 @@ async def stream_message_endpoint(conversation_id: str, request: CreateMessageRe
                     )
                     logger.info(f"Assistant message {assistant_msg.id} saved and embedding enqueued.")
 
-        return StreamingResponse(response_generator(), media_type="text/event-stream")
+        # Use EventSourceResponse if available for better SSE semantics and flushing
+        if EventSourceResponse is not None:
+            return EventSourceResponse(response_generator())
+        else:
+            # Fallback to StreamingResponse if no EventSourceResponse available
+            from fastapi.responses import StreamingResponse
+            return StreamingResponse(response_generator(), media_type="text/event-stream")
 
     except Exception as e:
         logger.error(f"Error in stream endpoint: {e}", exc_info=True)
-        # Cannot raise HTTPException here as the response has already started streaming
-        # Log the error and the stream will close.
-        return StreamingResponse(iter([f"Error: {e}"]), media_type="text/plain", status_code=500)
+        # If we hit an import-time or startup error before streaming begins,
+        # respond with a JSON error. We avoid StreamingResponse here because
+        # StreamingResponse may not be imported in all branches.
+        return JSONResponse(status_code=500, content={"detail": f"Error: {e}"})
 
 
 async def run_assistant_flow(conversation_id: uuid.UUID, user_id: str):

@@ -33,6 +33,54 @@ class AgentState(TypedDict):
     stream: bool
 
 
+async def classify_node(state: AgentState) -> Dict[str, Any]:
+    """
+    Simple classifier node: decide whether to perform retrieval based on the
+    latest user message length or keywords. Returns a small dict indicating
+    whether retrieval is needed.
+    """
+    logger.info("Classify node: Deciding if retrieval is necessary")
+    need_retrieval = False
+    try:
+        latest = None
+        for msg in reversed(state.get("chat_history", [])):
+            if isinstance(msg, dict) and msg.get("role") == "user":
+                latest = msg.get("content")
+                break
+        if latest:
+            # simple heuristic: if message length > 30 or contains keyword
+            if len(latest) > 30 or any(k in latest.lower() for k in ("who", "what", "why", "how", "google", "chip")):
+                need_retrieval = True
+    except Exception:
+        logger.exception("Classify node: failed to inspect chat history")
+
+    return {"need_retrieval": need_retrieval}
+
+
+def build_prompt(state: AgentState) -> str:
+    """Build a simple prompt from chat history and retrieved context."""
+    parts = []
+    # include retrieved context first if present
+    rc = state.get("retrieved_context") or []
+    if rc:
+        parts.append("Retrieved context:")
+        for d in rc:
+            parts.append(d.get("text") or d.get("content") or str(d))
+
+    # Instruction: ask the model to be concise. This ensures both streaming and
+    # non-streaming nodes produce short answers (approx ~5 sentences).
+    parts.append("Instruction: Provide a concise answer in about 5 sentences. Be clear, direct, and avoid unnecessary details.")
+
+    parts.append("Conversation:")
+    for msg in state.get("chat_history", []):
+        role = msg.get("role") if isinstance(msg, dict) else getattr(msg, "role", "user")
+        content = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", "")
+        parts.append(f"{role}: {content}")
+
+    parts.append("Assistant:")
+    return "\n".join(parts)
+
+
 # --- Nodes ---
 async def retrieve_node(state: AgentState) -> Dict[str, Any]:
     """
@@ -51,9 +99,12 @@ async def retrieve_node(state: AgentState) -> Dict[str, Any]:
     if not user_message:
         logger.warning("Retrieve node: No user message found in chat history")
         state["retrieved_context"] = []
-        return state
+        # Return the expected node output shape
+        return {"documents": [], "user_message": None}
         
     # Query ChromaDB
+    # Prepare a safe default so we always have the variable defined
+    reranked_results = []
     try:
         # Get content from message (handle both dict and object)
         if isinstance(user_message, dict):
@@ -87,6 +138,8 @@ async def retrieve_node(state: AgentState) -> Dict[str, Any]:
         state["retrieved_context"] = []
         
     logger.info("---RETRIEVE NODE FINISHED---")
+    # Ensure we return the documents we actually retrieved/re-ranked
+    documents = reranked_results
     return {"documents": documents, "user_message": user_message}
 
 
@@ -98,17 +151,18 @@ async def respond_node(state: AgentState) -> Dict[str, str]:
     try:
         prompt = build_prompt(state)
         logger.info(f"Respond node: Built prompt:\n{prompt}")
-        
+
         response_text = generate_text(prompt, model="gpt-oss")
         state["response"] = response_text
         logger.info("Respond node: Generated response successfully")
-        
+
     except Exception as e:
         logger.error(f"Respond node: Error generating response: {e}")
         state["response"] = "Sorry, I encountered an error."
-        
+        response_text = state["response"]
+
     logger.info("---RESPOND NODE FINISHED---")
-    return {"response": response}
+    return {"response": response_text}
 
 
 async def stream_respond_node(state: AgentState) -> AsyncGenerator[Dict[str, str], None]:
@@ -137,7 +191,7 @@ async def stream_respond_node(state: AgentState) -> AsyncGenerator[Dict[str, str
 
 
 # --- Flow Definition ---
-def create_flow() -> StateGraph:
+def create_flow() -> Any:
     """
     Create the LangGraph flow.
     """
@@ -164,7 +218,7 @@ def create_flow() -> StateGraph:
     logger.info("LangGraph flow created successfully")
     return app
 
-def create_streaming_flow() -> StateGraph:
+def create_streaming_flow() -> Any:
     """
     Create a LangGraph flow that supports streaming.
     """
@@ -205,13 +259,17 @@ async def test_flow():
         "retrieved_context": None,
         "response": None
     }
+    # Required by the AgentState TypedDict
+    test_state["stream"] = False
     
     print("Testing LangGraph flow...")
     print(f"Initial state: {test_state}")
     
     # Create and run the flow
     app = create_flow()
-    final_state = await app.ainvoke(test_state)
+    # The compiled graph exposes async invocation methods; cast to Any for type checkers
+    app_any = app  # type: Any
+    final_state = await app_any.ainvoke(test_state)
     
     print(f"Final state: {final_state}")
     print(f"Response: {final_state['response']}")

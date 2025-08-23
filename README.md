@@ -50,7 +50,7 @@ uv python install 3.12
 
 1. **Run backend:**
 	```bash
-	uv run uvicorn agent.main:app --reload --host 0.0.0.0 --port 8000
+	  curl -sS -X GET http://127.0.0.1:8000/healthz -w "\nHTTP_STATUS:%{http_code}\n"
 	```
 2. **Run UI (optional):**
 	```bash
