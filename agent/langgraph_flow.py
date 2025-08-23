@@ -195,7 +195,7 @@ async def classify_node(state: AgentState) -> Dict[str, Any]:
     if intent == "unknown" or confidence < INTENT_CONFIDENCE_THRESHOLD:
         clarify_needed = True
         # Normalize to a fixed clarify question (language-aware) for reliable attempt counting
-        DEFAULT_CLARIFY_Q_VI = "Để mình hỗ trợ chính xác, bạn đang cần tư vấn lắp ráp máy, hỏi thông tin mua hàng hay bảo hành ạ?"
+        DEFAULT_CLARIFY_Q_VI = "Để em hỗ trợ chính xác, quý khách đang cần tư vấn lắp ráp máy, hỏi thông tin mua hàng hay bảo hành ạ?"
         DEFAULT_CLARIFY_Q_EN = "To help you accurately, are you looking for PC build advice, shopping/product info, or warranty support?"
         DEFAULT_CLARIFY_Q = DEFAULT_CLARIFY_Q_EN if preferred_lang == "en" else DEFAULT_CLARIFY_Q_VI
         clarify_questions = [DEFAULT_CLARIFY_Q]
@@ -206,7 +206,7 @@ async def classify_node(state: AgentState) -> Dict[str, Any]:
         DEFAULT_CLARIFY_Q = (
             "To help you accurately, are you looking for PC build advice, shopping/product info, or warranty support?"
             if preferred_lang == "en"
-            else "Để mình hỗ trợ chính xác, bạn đang cần tư vấn lắp ráp máy, hỏi thông tin mua hàng hay bảo hành ạ?"
+            else "Để em hỗ trợ chính xác, quý khách đang cần tư vấn lắp ráp máy, hỏi thông tin mua hàng hay bảo hành ạ?"
         )
         for msg in state.get("chat_history", []):
             if isinstance(msg, dict) and msg.get("role") == "assistant":
@@ -269,7 +269,7 @@ def build_prompt(state: AgentState) -> str:
     if lang == "en":
         parts.append("Instruction: Answer in English, concise (~5 sentences), clear, and to the point.")
     else:
-        parts.append("Instruction: Trả lời bằng tiếng Việt, ngắn gọn (~5 câu), rõ ràng, tránh lan man.")
+        parts.append("Instruction: Trả lời bằng tiếng Việt, ngắn gọn (~5 câu), rõ ràng, tránh lan man; AI xưng 'em' và gọi người dùng là 'quý khách'.")
 
     parts.append("Conversation:")
     for msg in state.get("chat_history", []):
