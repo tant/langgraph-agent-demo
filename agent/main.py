@@ -238,6 +238,7 @@ async def stream_message_endpoint(conversation_id: str, request: CreateMessageRe
                     "need_retrieval_hint": False,
                     "clarify_questions": [],
                     "clarify_attempts": 0,
+                    "preferred_language": "vi",
                 }
 
                 # We'll run the classify/retrieve nodes directly and then stream from
@@ -381,6 +382,7 @@ async def run_assistant_flow(conversation_id: uuid.UUID, user_id: str):
             "need_retrieval_hint": False,
             "clarify_questions": [],
             "clarify_attempts": 0,
+            "preferred_language": "vi",
         }
 
         # 3. Create and invoke the LangGraph flow

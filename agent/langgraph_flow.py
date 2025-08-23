@@ -40,6 +40,7 @@ class AgentState(TypedDict):
     need_retrieval_hint: Optional[bool]
     clarify_questions: Optional[List[str]]
     clarify_attempts: Optional[int]
+    preferred_language: Optional[str]  # 'vi' (default) or 'en'
 
 
 def _keyword_heuristic_intent(text: str) -> str:
@@ -102,6 +103,36 @@ async def classify_node(state: AgentState) -> Dict[str, Any]:
             if len(recents) >= 3:
                 break
 
+    # Detect preferred language based on the first user message in the conversation; default to VI
+    def _detect_language_first_user(history: List[Dict[str, Any]]) -> str:
+        try:
+            # find first user message in chronological order
+            for msg in history:
+                if isinstance(msg, dict) and msg.get("role") == "user":
+                    text = msg.get("content")
+                    if not isinstance(text, str):
+                        break
+                    t = text.lower()
+                    # If contains Vietnamese diacritics, assume VI
+                    if any(ch in t for ch in "àáảãạăằắẳẵặâầấẩẫậđèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵ"):
+                        return "vi"
+                    # Basic Vietnamese cue words
+                    vi_words = ["anh", "em", "mình", "bạn", "không", "vâng", "dạ", "ạ", "nhé", "tư vấn", "giá", "mua"]
+                    if any(w in t for w in vi_words):
+                        return "vi"
+                    # Basic English cue words (no diacritics)
+                    en_words = ["hello", "hi", "please", "price", "buy", "warranty", "how", "what", "can you", "i want"]
+                    if any(w in t for w in en_words):
+                        return "en"
+                    # Default to VI if unsure
+                    return "vi"
+        except Exception:
+            pass
+        return "vi"
+
+    preferred_lang = state.get("preferred_language") or _detect_language_first_user(list(reversed(list(reversed(state.get("chat_history", []))))))
+    state["preferred_language"] = preferred_lang
+
     # Build prompt
     from json import loads
     prompt = (
@@ -163,14 +194,20 @@ async def classify_node(state: AgentState) -> Dict[str, Any]:
     # Clarify if still unknown or low confidence
     if intent == "unknown" or confidence < INTENT_CONFIDENCE_THRESHOLD:
         clarify_needed = True
-        # Normalize to a fixed Vietnamese clarify question so attempts can be counted reliably
-        DEFAULT_CLARIFY_Q = "Để mình hỗ trợ chính xác, bạn đang cần tư vấn lắp ráp máy, hỏi thông tin mua hàng hay bảo hành ạ?"
+        # Normalize to a fixed clarify question (language-aware) for reliable attempt counting
+        DEFAULT_CLARIFY_Q_VI = "Để mình hỗ trợ chính xác, bạn đang cần tư vấn lắp ráp máy, hỏi thông tin mua hàng hay bảo hành ạ?"
+        DEFAULT_CLARIFY_Q_EN = "To help you accurately, are you looking for PC build advice, shopping/product info, or warranty support?"
+        DEFAULT_CLARIFY_Q = DEFAULT_CLARIFY_Q_EN if preferred_lang == "en" else DEFAULT_CLARIFY_Q_VI
         clarify_questions = [DEFAULT_CLARIFY_Q]
 
     # Count clarify attempts from chat_history
     attempts = 0
     try:
-        DEFAULT_CLARIFY_Q = "Để mình hỗ trợ chính xác, bạn đang cần tư vấn lắp ráp máy, hỏi thông tin mua hàng hay bảo hành ạ?"
+        DEFAULT_CLARIFY_Q = (
+            "To help you accurately, are you looking for PC build advice, shopping/product info, or warranty support?"
+            if preferred_lang == "en"
+            else "Để mình hỗ trợ chính xác, bạn đang cần tư vấn lắp ráp máy, hỏi thông tin mua hàng hay bảo hành ạ?"
+        )
         for msg in state.get("chat_history", []):
             if isinstance(msg, dict) and msg.get("role") == "assistant":
                 content = msg.get("content")
@@ -201,7 +238,7 @@ async def classify_node(state: AgentState) -> Dict[str, Any]:
         "intent": intent,
         "clarify_needed": clarify_needed,
         "clarify_questions": clarify_questions,
-    "clarify_attempts": attempts,
+        "clarify_attempts": attempts,
     }
 
 
@@ -228,7 +265,11 @@ def build_prompt(state: AgentState) -> str:
     intent = state.get("intent")
     if intent and intent != "unknown":
         parts.append(f"Detected intent: {intent}")
-    parts.append("Instruction: Trả lời bằng tiếng Việt, ngắn gọn (~5 câu), rõ ràng, tránh lan man.")
+    lang = state.get("preferred_language") or "vi"
+    if lang == "en":
+        parts.append("Instruction: Answer in English, concise (~5 sentences), clear, and to the point.")
+    else:
+        parts.append("Instruction: Trả lời bằng tiếng Việt, ngắn gọn (~5 câu), rõ ràng, tránh lan man.")
 
     parts.append("Conversation:")
     for msg in state.get("chat_history", []):
@@ -423,6 +464,7 @@ async def test_flow():
         "need_retrieval_hint": False,
         "clarify_questions": [],
         "clarify_attempts": 0,
+    "preferred_language": "vi",
     }
     
     print("Testing LangGraph flow...")
