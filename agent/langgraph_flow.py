@@ -18,6 +18,11 @@ from agent.ollama_client import generate_text, generate_text_stream
 import os
 import pathlib
 
+# --- Env-configurable knobs ---
+CLARIFY_MAX_ATTEMPTS: int = int(os.environ.get("INTENT_CLARIFY_MAX_ATTEMPTS", "3"))
+INTENT_CONFIDENCE_THRESHOLD: float = float(os.environ.get("INTENT_CONFIDENCE_THRESHOLD", "0.5"))
+PERSONA_MAX_CHARS: int = int(os.environ.get("PERSONA_MAX_CHARS", "4000"))
+
 logger = logging.getLogger(__name__)
 
 # --- State ---
@@ -146,18 +151,18 @@ async def classify_node(state: AgentState) -> Dict[str, Any]:
     if intent not in {"assemble_pc", "shopping", "warranty", "unknown"}:
         intent = "unknown"
 
-    if latest and (intent == "unknown" or confidence < 0.5):
+    if latest and (intent == "unknown" or confidence < INTENT_CONFIDENCE_THRESHOLD):
         h = _keyword_heuristic_intent(latest)
         if h != "unknown":
             intent = h
-            confidence = max(confidence, 0.6)
+            confidence = max(confidence, max(0.6, INTENT_CONFIDENCE_THRESHOLD))
 
     # Derive need_retrieval if not provided
     if need_retrieval is False and intent in {"assemble_pc", "shopping", "warranty"}:
         need_retrieval = _need_retrieval_for_intent(intent, latest or "")
 
     # Clarify if still unknown or low confidence
-    if intent == "unknown" or confidence < 0.5:
+    if intent == "unknown" or confidence < INTENT_CONFIDENCE_THRESHOLD:
         clarify_needed = True
         # Normalize to a fixed Vietnamese clarify question so attempts can be counted reliably
         DEFAULT_CLARIFY_Q = "Để mình hỗ trợ chính xác, bạn đang cần tư vấn lắp ráp máy, hỏi thông tin mua hàng hay bảo hành ạ?"
@@ -176,7 +181,7 @@ async def classify_node(state: AgentState) -> Dict[str, Any]:
         attempts = 0
 
     should_farewell = False
-    if clarify_needed and attempts >= 3:
+    if clarify_needed and attempts >= CLARIFY_MAX_ATTEMPTS:
         # Stop clarifying further; a farewell should be sent by caller
         clarify_needed = False
         should_farewell = True
@@ -215,7 +220,7 @@ def build_prompt(state: AgentState) -> str:
         pp = pathlib.Path(persona_path)
         if pp.exists():
             parts.append("System Persona:")
-            parts.append(pp.read_text(encoding="utf-8")[:4000])  # cap to reasonable size
+            parts.append(pp.read_text(encoding="utf-8")[:PERSONA_MAX_CHARS])  # cap by env
     except Exception:
         pass
     # include retrieved context first if present

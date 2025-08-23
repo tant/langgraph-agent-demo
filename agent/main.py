@@ -279,7 +279,7 @@ async def stream_message_endpoint(conversation_id: str, request: CreateMessageRe
                         await asyncio.sleep(0)
                         return
 
-                    if classify_out.get("clarify_needed") and (int(classify_out.get("clarify_attempts", 0)) < 3):
+                    if classify_out.get("clarify_needed") and (int(classify_out.get("clarify_attempts", 0)) < int(os.environ.get("INTENT_CLARIFY_MAX_ATTEMPTS", "3"))):
                         # Stream the first clarify question and end this turn
                         questions_val = classify_out.get("clarify_questions")
                         questions = questions_val if isinstance(questions_val, list) else []
