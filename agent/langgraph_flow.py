@@ -15,6 +15,8 @@ from langchain_core.messages import HumanMessage
 import logging
 from agent.retriever import query_vectors, simple_rerank
 from agent.ollama_client import generate_text, generate_text_stream
+import os
+import pathlib
 
 logger = logging.getLogger(__name__)
 
@@ -207,6 +209,15 @@ async def classify_node(state: AgentState) -> Dict[str, Any]:
 def build_prompt(state: AgentState) -> str:
     """Build a simple prompt from chat history and retrieved context."""
     parts = []
+    # Include persona if configured
+    try:
+        persona_path = os.environ.get("PERSONA_PATH", str(pathlib.Path.cwd() / "prompts/system_persona_vi.md"))
+        pp = pathlib.Path(persona_path)
+        if pp.exists():
+            parts.append("System Persona:")
+            parts.append(pp.read_text(encoding="utf-8")[:4000])  # cap to reasonable size
+    except Exception:
+        pass
     # include retrieved context first if present
     rc = state.get("retrieved_context") or []
     if rc:
