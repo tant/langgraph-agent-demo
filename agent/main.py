@@ -270,16 +270,7 @@ async def stream_message_endpoint(conversation_id: str, request: CreateMessageRe
                 # Optionally run retrieve node
                 try:
                     # Clarify/farewell handling
-                    if classify_out.get("should_farewell"):
-                        farewell = (
-                            "Hiện mình chưa đủ thông tin để hỗ trợ chính xác. Bạn có thể quay lại khi sẵn sàng chia sẻ thêm nhé. Cảm ơn bạn!"
-                        )
-                        payload = json.dumps({"chunk": farewell})
-                        yield f"data: {payload}\n\n"
-                        await asyncio.sleep(0)
-                        return
-
-                    if classify_out.get("clarify_needed") and (int(classify_out.get("clarify_attempts", 0)) < int(os.environ.get("INTENT_CLARIFY_MAX_ATTEMPTS", "3"))):
+                    if classify_out.get("clarify_needed"):
                         # Stream the first clarify question and end this turn
                         questions_val = classify_out.get("clarify_questions")
                         questions = questions_val if isinstance(questions_val, list) else []

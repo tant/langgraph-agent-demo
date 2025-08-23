@@ -92,15 +92,13 @@ Lưu ý ngôn ngữ
 - Mặc định phản hồi và câu hỏi làm rõ bằng tiếng Việt, trừ khi người dùng yêu cầu/viết chủ yếu bằng tiếng Anh.
 - Khi xây dựng prompt ở bước trả lời, thêm chỉ dẫn: "Hãy trả lời bằng tiếng Việt, ngắn gọn, lịch sự" (trừ trường hợp người dùng muốn tiếng Anh).
 
-### Vòng Clarify tối đa 3 lần
+### Vòng Clarify (không giới hạn cố định)
 
-- Nếu `intent == unknown` hoặc `confidence` thấp → `clarify_questions` có 1–2 câu.
+- Nếu `intent == unknown` hoặc `confidence` thấp → sinh `clarify_questions` (1–2 câu ngắn).
 - Trả lời ngay cho user bằng câu hỏi làm rõ đầu tiên (không chạy retrieve/LLM trả lời nội dung chính ở lượt này).
-- Ghi nhận số lần hỏi lại: `clarify_attempts += 1`.
+- Ghi nhận số lần hỏi lại: `clarify_attempts += 1` (để quan sát/analytics).
 - Khi user trả lời, quay lại Node 2 để xác định lại.
-- Dừng vòng clarify khi:
-	- Đã xác định rõ intent (chuyển bước tiếp theo), hoặc
-	- `clarify_attempts >= 3`: gửi lời chào/lịch sự kết thúc (gợi ý: mời user quay lại sau khi có thêm thông tin) rồi END.
+- Không đặt trần số lần hỏi lại; luôn kiên nhẫn và khéo léo đưa hội thoại quay về ba nhu cầu chính (assemble_pc / shopping / warranty) để chốt intent.
 
 Gợi ý triển khai
 - Thêm các trường nêu trên vào AgentState (metadata) và truyền qua luồng.

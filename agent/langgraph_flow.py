@@ -19,7 +19,6 @@ import os
 import pathlib
 
 # --- Env-configurable knobs ---
-CLARIFY_MAX_ATTEMPTS: int = int(os.environ.get("INTENT_CLARIFY_MAX_ATTEMPTS", "3"))
 INTENT_CONFIDENCE_THRESHOLD: float = float(os.environ.get("INTENT_CONFIDENCE_THRESHOLD", "0.5"))
 PERSONA_MAX_CHARS: int = int(os.environ.get("PERSONA_MAX_CHARS", "4000"))
 
@@ -180,11 +179,7 @@ async def classify_node(state: AgentState) -> Dict[str, Any]:
     except Exception:
         attempts = 0
 
-    should_farewell = False
-    if clarify_needed and attempts >= CLARIFY_MAX_ATTEMPTS:
-        # Stop clarifying further; a farewell should be sent by caller
-        clarify_needed = False
-        should_farewell = True
+    # No farewell cutoff: we keep clarifying gently until the intent is clear
 
     # Update state
     state["intent"] = intent
@@ -207,7 +202,6 @@ async def classify_node(state: AgentState) -> Dict[str, Any]:
         "clarify_needed": clarify_needed,
         "clarify_questions": clarify_questions,
     "clarify_attempts": attempts,
-    "should_farewell": should_farewell,
     }
 
 
