@@ -18,6 +18,7 @@ from datetime import datetime
 from agent.database import init_db, create_conversation, get_conversation, create_message, get_messages_history
 from agent.langgraph_flow import AgentState, create_flow
 from agent.retriever import upsert_vectors
+import pathlib
 
 # --- Configuration ---
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "localhost")
@@ -185,6 +186,35 @@ async def create_conversation_endpoint(request: CreateConversationRequest):
     try:
         conv = await create_conversation(request.user_id, request.metadata)
         logger.info(f"Conversation created with ID {conv.id}")
+        # After creating, optionally add a greeting assistant message
+        try:
+            # Load greeting from persona file (line starting with 'Greeting: ')
+            persona_path = os.environ.get("PERSONA_PATH", str(pathlib.Path.cwd() / "prompts/system_persona_vi.md"))
+            pp = pathlib.Path(persona_path)
+            greeting_text: Optional[str] = None
+            if pp.exists():
+                for raw in pp.read_text(encoding="utf-8").splitlines():
+                    line = raw.strip()
+                    if line.lower().startswith("greeting:"):
+                        greeting_text = line.split(":", 1)[1].strip()
+                        break
+            if greeting_text:
+                # save assistant greeting message
+                assistant_msg = await create_message(
+                    conversation_id=conv.id,
+                    sender="assistant",
+                    text=greeting_text,
+                )
+                # embed greeting so it is available to retrieval
+                await embed_and_store_message(
+                    message_id=str(assistant_msg.id),
+                    conversation_id=str(conv.id),
+                    user_id=conv.user_id,
+                    text=greeting_text,
+                )
+        except Exception as ge:
+            logger.warning(f"Failed to add greeting message: {ge}")
+
         return CreateConversationResponse(
             id=str(conv.id),
             user_id=conv.user_id,
