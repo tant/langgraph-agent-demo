@@ -405,7 +405,7 @@ async def clarify_stream_node(state: AgentState) -> AsyncGenerator[Dict[str, str
 
 
 async def warranty_stream_node(state: AgentState) -> AsyncGenerator[Dict[str, str], None]:
-    """Handle warranty flow streaming: ask for serial, validate, or return result (hardcoded demo)."""
+    """Handle warranty flow streaming: ask for serial, validate, and return result via DB lookup only."""
     # Extract latest user text and previous assistant text
     latest_text = ""
     prev_assistant = ""
@@ -464,16 +464,38 @@ async def warranty_stream_node(state: AgentState) -> AsyncGenerator[Dict[str, st
 
     lang = state.get("preferred_language") or "vi"
     tail = _follow_up(lang)
-    if serial_norm == "0979825281":
+    # Always query DB
+    try:
+        from agent.database import get_warranty_by_serial
+    except Exception:
+        get_warranty_by_serial = None  # type: ignore
+
+    record = None
+    if get_warranty_by_serial is not None:
+        try:
+            record = await get_warranty_by_serial(serial_norm)
+        except Exception:
+            record = None
+
+    if record is not None:
+        try:
+            d = record.warranty_end_date
+            # Format as D/M/YYYY for VI friendliness
+            date_vi = f"{d.day}/{d.month}/{d.year}"
+        except Exception:
+            date_vi = str(getattr(record, "warranty_end_date", ""))
         text = (
-            "Thông tin bảo hành: Sản phẩm 'S23 Ultra', Serial '0979825281', hết bảo hành vào ngày 12/8/2026. "
+            f"Thông tin bảo hành: Sản phẩm '{record.product_name}', Serial '{serial_norm}', hết bảo hành vào ngày {date_vi}. "
             f"{tail}"
         )
-    else:
-        text = (
-            "Số serial này hiện chưa có trên hệ thống. Quý khách vui lòng gọi hotline để được hỗ trợ thêm ạ. "
-            f"{tail}"
-        )
+        yield {"response": text}
+        return
+
+    # Not found in DB
+    text = (
+        "Số serial này hiện chưa có trên hệ thống. Quý khách vui lòng gọi hotline để được hỗ trợ thêm ạ. "
+        f"{tail}"
+    )
     yield {"response": text}
 
 

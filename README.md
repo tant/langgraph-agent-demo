@@ -101,6 +101,20 @@ Notes:
 - ChromaDB persists under `database/chroma_db/`.
 - `.env.local` is auto‑loaded by scripts to pick up these variables when present.
 
+### Warranty data loading (CSV → DB)
+
+Load a CSV into the DB for real warranty lookups:
+
+```bash
+uv run scripts/upsert_warranty_csv.py --file knowledge/warranty.csv --dry-run  # validate
+uv run scripts/upsert_warranty_csv.py --file knowledge/warranty.csv             # write
+```
+
+CSV format (required headers): `serial,product_name,warranty_end_date`
+- Dates: `YYYY-MM-DD` or `DD/MM/YYYY`
+
+Lookup always uses the database. Ensure you’ve loaded your CSV into `warranty_records`.
+
 ---
 
 ## 🗂️ Repo Layout

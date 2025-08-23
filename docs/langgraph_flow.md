@@ -85,6 +85,15 @@ Gợi ý mở rộng (nếu muốn thuần “graph” hơn)
 - Mapping: `messages.id` -> chroma vector id. Dimension: 1024 (bge-m3).
 - Upsert batch, idempotent; delete vectors khi xóa message/conversation.
 
+### Dữ liệu bảo hành (CSV → DB)
+- File nhập: `knowledge/warranty.csv`
+- Format CSV (header bắt buộc): `serial,product_name,warranty_end_date`
+	- `warranty_end_date`: `YYYY-MM-DD` hoặc `DD/MM/YYYY`
+- Script upsert: `python scripts/upsert_warranty_csv.py --file knowledge/warranty.csv`
+	- Tùy chọn `--dry-run` để kiểm tra dữ liệu trước khi ghi.
+	- Khóa chính: `serial` (chuẩn hóa bỏ khoảng trắng đầu/cuối). Ghi đè nếu trùng.
+- Flow luôn tra cứu DB; hãy nạp CSV trước khi kiểm tra tính năng bảo hành.
+
 ## Embedding strategy
 - Model: `bge-m3` (1024-d) via Ollama.
 - Chunking: 200–512 tokens nếu lớn; chunk id = `{message_id}#chunk_{i}`.
