@@ -1,25 +1,22 @@
 import os
 import logging
 import uuid
-from fastapi import FastAPI, Request, HTTPException, Depends, BackgroundTasks
+from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
 from fastapi.responses import JSONResponse
 try:
     # Prefer sse-starlette if installed for robust SSE handling
     from sse_starlette.sse import EventSourceResponse
 except Exception:
-    # Fallback to Starlette's EventSourceResponse if available
-    try:
-        from starlette.responses import EventSourceResponse
-    except Exception:
-        EventSourceResponse = None
+    # Fallback: if not installed, disable EventSourceResponse (will use StreamingResponse)
+    EventSourceResponse = None
 import json
 import asyncio
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime
 from agent.database import init_db, create_conversation, get_conversation, create_message, get_messages_history
-from agent.langgraph_flow import AgentState, create_flow, create_streaming_flow
+from agent.langgraph_flow import AgentState, create_flow
 from agent.retriever import upsert_vectors
 
 # --- Configuration ---
@@ -96,7 +93,7 @@ async def startup_event():
 
 # Pydantic models for request/response
 class CreateConversationRequest(BaseModel):
-    user_id: str = Field(..., example="user-123")
+    user_id: str
     metadata: Optional[dict] = None
 
 class CreateConversationResponse(BaseModel):
@@ -105,7 +102,7 @@ class CreateConversationResponse(BaseModel):
     created_at: datetime
 
 class CreateMessageRequest(BaseModel):
-    content: str = Field(..., example="Hello, how can you help me?")
+    content: str
     metadata: Optional[dict] = None
 
 class MessageResponse(BaseModel):
@@ -233,7 +230,14 @@ async def stream_message_endpoint(conversation_id: str, request: CreateMessageRe
                     "user_id": conv.user_id,
                     "chat_history": [{"role": msg.sender, "content": msg.text} for msg in history],
                     "metadata": {"conversation_id": str(conv_uuid), "user_id": conv.user_id},
-                    "retrieved_context": None, "response": None, "stream": True,
+                    "retrieved_context": None,
+                    "response": None,
+                    "stream": True,
+                    "intent": "unknown",
+                    "intent_confidence": 0.0,
+                    "need_retrieval_hint": False,
+                    "clarify_questions": [],
+                    "clarify_attempts": 0,
                 }
 
                 # We'll run the classify/retrieve nodes directly and then stream from
@@ -265,6 +269,27 @@ async def stream_message_endpoint(conversation_id: str, request: CreateMessageRe
 
                 # Optionally run retrieve node
                 try:
+                    # Clarify/farewell handling
+                    if classify_out.get("should_farewell"):
+                        farewell = (
+                            "Hiện mình chưa đủ thông tin để hỗ trợ chính xác. Bạn có thể quay lại khi sẵn sàng chia sẻ thêm nhé. Cảm ơn bạn!"
+                        )
+                        payload = json.dumps({"chunk": farewell})
+                        yield f"data: {payload}\n\n"
+                        await asyncio.sleep(0)
+                        return
+
+                    if classify_out.get("clarify_needed") and (int(classify_out.get("clarify_attempts", 0)) < 3):
+                        # Stream the first clarify question and end this turn
+                        questions_val = classify_out.get("clarify_questions")
+                        questions = questions_val if isinstance(questions_val, list) else []
+                        if questions and isinstance(questions[0], str):
+                            cq = questions[0]
+                            payload = json.dumps({"chunk": cq})
+                            yield f"data: {payload}\n\n"
+                            await asyncio.sleep(0)
+                            return
+
                     if classify_out.get("need_retrieval"):
                         await retrieve_node(initial_state)
                         logger.info(f"[{conversation_id}] retrieve populated state.retrieved_context")
@@ -359,6 +384,12 @@ async def run_assistant_flow(conversation_id: uuid.UUID, user_id: str):
             },
             "retrieved_context": None,
             "response": None,
+            "stream": False,
+            "intent": "unknown",
+            "intent_confidence": 0.0,
+            "need_retrieval_hint": False,
+            "clarify_questions": [],
+            "clarify_attempts": 0,
         }
 
         # 3. Create and invoke the LangGraph flow

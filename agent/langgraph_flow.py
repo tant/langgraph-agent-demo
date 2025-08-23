@@ -7,15 +7,12 @@ This module defines the basic LangGraph flow with three nodes:
 - respond: Build prompt and generate response using LLM
 """
 
-from typing import Annotated, List, Dict, Any, Optional, Generator, AsyncGenerator
+from typing import Annotated, List, Dict, Any, Optional, AsyncGenerator
 from typing_extensions import TypedDict
 from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
-from langchain_core.messages import HumanMessage, AIMessage
-from pydantic import BaseModel, Field
-import uuid
+from langchain_core.messages import HumanMessage
 import logging
-from agent.database import get_messages_history
 from agent.retriever import query_vectors, simple_rerank
 from agent.ollama_client import generate_text, generate_text_stream
 
@@ -31,30 +28,180 @@ class AgentState(TypedDict):
     retrieved_context: Optional[List[Dict[str, Any]]]  # Retrieved context from ChromaDB
     response: Optional[str]  # Final response from the LLM
     stream: bool
+    # Intent & clarify
+    intent: Optional[str]
+    intent_confidence: Optional[float]
+    need_retrieval_hint: Optional[bool]
+    clarify_questions: Optional[List[str]]
+    clarify_attempts: Optional[int]
+
+
+def _keyword_heuristic_intent(text: str) -> str:
+    """Fallback heuristic for intent classification using bilingual keywords."""
+    t = (text or "").lower()
+    assemble_kw = [
+        "lắp ráp", "ráp máy", "cấu hình", "tư vấn linh kiện", "tương thích", "bottleneck", "ngân sách",
+        "tản nhiệt", "psu", "fps", "chơi game", "render", "build pc", "pc build", "spec",
+        "compatibility", "budget", "cooler", "motherboard", "cpu", "gpu", "ssd", "case", "mini-itx",
+        "micro-atx", "atx", "overclock", "bios", "driver", "photoshop", "premiere"
+    ]
+    shopping_kw = [
+        "mua", "đặt", "giá", "bao nhiêu", "khuyến mãi", "giảm giá", "còn hàng", "hết hàng",
+        "giao hàng", "vận chuyển", "thanh toán", "đổi trả", "màu", "phiên bản", "mẫu", "buy",
+        "order", "price", "cost", "discount", "promotion", "in stock", "out of stock", "shipping",
+        "delivery", "payment", "return", "refund", "sku", "model", "color"
+    ]
+    warranty_kw = [
+        "bảo hành", "kiểm tra bảo hành", "chính sách", "thời hạn", "serial", "hóa đơn", "1 đổi 1",
+        "doa", "trung tâm bảo hành", "quy trình", "warranty", "check warranty", "warranty policy",
+        "duration", "sn", "invoice", "defect", "rma", "service center", "process"
+    ]
+    if any(k in t for k in assemble_kw):
+        return "assemble_pc"
+    if any(k in t for k in shopping_kw):
+        return "shopping"
+    if any(k in t for k in warranty_kw):
+        return "warranty"
+    return "unknown"
+
+
+def _need_retrieval_for_intent(intent: str, latest_text: str) -> bool:
+    if intent == "shopping":
+        return True
+    if intent == "warranty":
+        # If asking general policy without specifics could be False, but default True
+        return True
+    if intent == "assemble_pc":
+        # Default True as prices/compat often needed
+        return True
+    # unknown
+    return False
 
 
 async def classify_node(state: AgentState) -> Dict[str, Any]:
-    """
-    Simple classifier node: decide whether to perform retrieval based on the
-    latest user message length or keywords. Returns a small dict indicating
-    whether retrieval is needed.
-    """
-    logger.info("Classify node: Deciding if retrieval is necessary")
-    need_retrieval = False
-    try:
-        latest = None
-        for msg in reversed(state.get("chat_history", [])):
-            if isinstance(msg, dict) and msg.get("role") == "user":
-                latest = msg.get("content")
+    """LLM-based intent detection with bilingual support and clarify suggestions."""
+    logger.info("Classify node: Detecting intent and retrieval need")
+    # Extract latest and a few recent user messages
+    latest = None
+    recents: List[str] = []
+    for msg in reversed(state.get("chat_history", [])):
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            if latest is None:
+                content = msg.get("content")
+                latest = content if isinstance(content, str) else ""
+            else:
+                content = msg.get("content")
+                if isinstance(content, str) and content:
+                    recents.append(content)
+            if len(recents) >= 3:
                 break
-        if latest:
-            # simple heuristic: if message length > 30 or contains keyword
-            if len(latest) > 30 or any(k in latest.lower() for k in ("who", "what", "why", "how", "google", "chip")):
-                need_retrieval = True
-    except Exception:
-        logger.exception("Classify node: failed to inspect chat history")
 
-    return {"need_retrieval": need_retrieval}
+    # Build prompt
+    from json import loads
+    prompt = (
+        "Bạn là bộ phân loại intent cho chat tiếng Việt. Chỉ trả về JSON hợp lệ theo schema.\n"
+        "Các intent hợp lệ: 'assemble_pc' (tư vấn lắp ráp máy), 'shopping' (mua/đặt hàng), 'warranty' (bảo hành), hoặc 'unknown'.\n"
+        "Nếu 'unknown', hãy tạo 1–2 câu hỏi làm rõ bằng tiếng Việt, lịch sự, ngắn gọn.\n"
+        "Ưu tiên câu hỏi hiện tại hơn các câu trước. Hỗ trợ từ khóa song ngữ Việt–Anh.\n"
+        "Schema JSON:\n"
+        "{\"intent\":\"assemble_pc|shopping|warranty|unknown\",\"confidence\":0.0,\"need_retrieval\":false,\"clarify_needed\":false,\"clarify_questions\":[\"\"],\"rationale\":\"\"}\n"
+        f"latest_user_message: {latest!r}\n"
+        f"recent_user_messages: {recents!r}\n"
+        "Chỉ in JSON, KHÔNG kèm giải thích khác."
+    )
+
+    intent = "unknown"
+    confidence = 0.0
+    need_retrieval = False
+    clarify_needed = False
+    clarify_questions: List[str] = []
+
+    try:
+        # Use sync generate_text; consistent with respond_node's pattern
+        raw = generate_text(prompt, model="gpt-oss")
+        logger.info(f"Classify raw: {raw}")
+        data = None
+        try:
+            data = loads(raw)
+        except Exception:
+            # Sometimes the model may wrap or produce extra text; try to find JSON object
+            import re
+            m = re.search(r"\{.*\}", raw, flags=re.DOTALL)
+            if m:
+                data = loads(m.group(0))
+        if isinstance(data, dict):
+            intent = str(data.get("intent", "unknown"))
+            confidence = float(data.get("confidence", 0.0))
+            need_retrieval = bool(data.get("need_retrieval", False))
+            clarify_needed = bool(data.get("clarify_needed", False))
+            cq = data.get("clarify_questions") or []
+            if isinstance(cq, list):
+                clarify_questions = [str(x) for x in cq if x]
+    except Exception:
+        logger.exception("Classify node: LLM classification failed, using heuristic fallback")
+
+    # Fallbacks
+    if intent not in {"assemble_pc", "shopping", "warranty", "unknown"}:
+        intent = "unknown"
+
+    if latest and (intent == "unknown" or confidence < 0.5):
+        h = _keyword_heuristic_intent(latest)
+        if h != "unknown":
+            intent = h
+            confidence = max(confidence, 0.6)
+
+    # Derive need_retrieval if not provided
+    if need_retrieval is False and intent in {"assemble_pc", "shopping", "warranty"}:
+        need_retrieval = _need_retrieval_for_intent(intent, latest or "")
+
+    # Clarify if still unknown or low confidence
+    if intent == "unknown" or confidence < 0.5:
+        clarify_needed = True
+        # Normalize to a fixed Vietnamese clarify question so attempts can be counted reliably
+        DEFAULT_CLARIFY_Q = "Để mình hỗ trợ chính xác, bạn đang cần tư vấn lắp ráp máy, hỏi thông tin mua hàng hay bảo hành ạ?"
+        clarify_questions = [DEFAULT_CLARIFY_Q]
+
+    # Count clarify attempts from chat_history
+    attempts = 0
+    try:
+        DEFAULT_CLARIFY_Q = "Để mình hỗ trợ chính xác, bạn đang cần tư vấn lắp ráp máy, hỏi thông tin mua hàng hay bảo hành ạ?"
+        for msg in state.get("chat_history", []):
+            if isinstance(msg, dict) and msg.get("role") == "assistant":
+                content = msg.get("content")
+                if isinstance(content, str) and content.strip() == DEFAULT_CLARIFY_Q:
+                    attempts += 1
+    except Exception:
+        attempts = 0
+
+    should_farewell = False
+    if clarify_needed and attempts >= 3:
+        # Stop clarifying further; a farewell should be sent by caller
+        clarify_needed = False
+        should_farewell = True
+
+    # Update state
+    state["intent"] = intent
+    state["intent_confidence"] = confidence
+    state["need_retrieval_hint"] = need_retrieval
+    state["clarify_questions"] = clarify_questions
+    state["clarify_attempts"] = attempts
+
+    # Log compact line
+    try:
+        logger.info(
+            f"intent={intent} conf={confidence:.2f} retrieve={need_retrieval} clarify={clarify_needed} cid={state.get('conversation_id')} uid={state.get('user_id')}"
+        )
+    except Exception:
+        pass
+
+    return {
+        "need_retrieval": need_retrieval,
+        "intent": intent,
+        "clarify_needed": clarify_needed,
+        "clarify_questions": clarify_questions,
+    "clarify_attempts": attempts,
+    "should_farewell": should_farewell,
+    }
 
 
 def build_prompt(state: AgentState) -> str:
@@ -67,9 +214,11 @@ def build_prompt(state: AgentState) -> str:
         for d in rc:
             parts.append(d.get("text") or d.get("content") or str(d))
 
-    # Instruction: ask the model to be concise. This ensures both streaming and
-    # non-streaming nodes produce short answers (approx ~5 sentences).
-    parts.append("Instruction: Provide a concise answer in about 5 sentences. Be clear, direct, and avoid unnecessary details.")
+    # Instruction: concise Vietnamese answer and include detected intent if any
+    intent = state.get("intent")
+    if intent and intent != "unknown":
+        parts.append(f"Detected intent: {intent}")
+    parts.append("Instruction: Trả lời bằng tiếng Việt, ngắn gọn (~5 câu), rõ ràng, tránh lan man.")
 
     parts.append("Conversation:")
     for msg in state.get("chat_history", []):
@@ -257,10 +406,14 @@ async def test_flow():
             "user_id": "test-user-id"
         },
         "retrieved_context": None,
-        "response": None
+        "response": None,
+        "stream": False,
+        "intent": "unknown",
+        "intent_confidence": 0.0,
+        "need_retrieval_hint": False,
+        "clarify_questions": [],
+        "clarify_attempts": 0,
     }
-    # Required by the AgentState TypedDict
-    test_state["stream"] = False
     
     print("Testing LangGraph flow...")
     print(f"Initial state: {test_state}")
