@@ -3,21 +3,68 @@
 Tài liệu mô tả flow LangGraph, các node chính và các quyết định triển khai (ChromaDB local, bge-m3 1024-d, backend tách Gradio).
 
 ## Luồng tổng thể (rút gọn)
-0. START -> 0.5. Greeting (assistant chủ động chào) -> 1. Nhận câu hỏi -> 2. Xác định mong đợi (intent)
-- Nếu cần làm rõ (clarify) -> hỏi lại ngay 1 câu ngắn, lịch sự; lặp lại vòng làm rõ cho đến khi đủ tự tin về intent (không đặt trần số lần)
-- Nếu đã rõ intent:
-	- Nếu cần retrieve -> 3. Retrieve (ChromaDB) -> 4. Trả lời (LLM) -> 5. Hỏi user có muốn tiếp?
-	- Nếu không cần retrieve -> 4. Trả lời -> 5. Hỏi user có muốn tiếp?
-- Nếu dừng -> 6. END
+Tiền đề (ngoài vòng lặp):
+- 0. Greeting (assistant chủ động chào khi tạo conversation; xảy ra 1 lần, ngoài đường streaming chính)
+
+Vòng lặp cho mỗi tin nhắn của user:
+- 1. Nhận câu hỏi (ghi message vào DB, enqueue embedding) →
+- 2. Xác định mong đợi (intent)
+	- Nhánh sớm (early branch):
+		- Nếu cần làm rõ (clarify) → hỏi lại ngay 1 câu ngắn, lịch sự; kết thúc lượt; quay lại 1/2 ở lượt kế tiếp
+		- Nếu intent = warranty và đang “chờ serial” hoặc có serial hợp lệ trong tin nhắn → trả kết quả bảo hành ngay; kết thúc lượt; quay lại 1/2 ở lượt kế tiếp
+	- Nếu đã rõ intent và không nhánh sớm:
+		- Nếu cần retrieve → 3. Retrieve (ChromaDB) → 4. Trả lời (LLM)
+		- Nếu không cần retrieve → 4. Trả lời (LLM)
+- 5. (tùy) câu gợi mở/clarify chung → kết thúc lượt
+- Lặp lại cho đến khi user dừng (END)
 
 ## Nodes (tóm tắt hành động)
-- Node 0 (Greeting): khi tạo conversation, assistant tự động gửi lời chào lấy từ persona (file ngoài code), lưu vào DB và index embedding.
-- Node 1 (Nhận câu hỏi): xác thực token (`X-API-Key`), tạo/đảm bảo conversation, lưu message raw vào DB (message_id).
-- Node 2 (Xác định mong đợi/Intent): dùng LLM xác định ý định người dùng và nhu cầu làm rõ; nếu cần clarify thì hỏi lại ngay một câu ngắn, lịch sự (không giới hạn số lần), sau đó kết thúc lượt. Khi user trả lời, quay lại Node 2 để xác định lại.
-- Node 3 (Retrieve): truy Chroma (filter theo conversation/user), trả về top-K, re-rank theo freshness/same-conversation.
-- Node 4 (Trả lời): build prompt (persona + quy tắc xưng hô + detected intent + ngôn ngữ ưu tiên + history + retrieved), gọi LLM (`gpt-oss`) để sinh response, lưu response.
-- Node 5 (Hỏi tiếp): giữ nhịp hội thoại, nếu user muốn tiếp tục thì quay lại Node 1/2 tùy ngữ cảnh.
-- Node 6 (END): mark conversation inactive, schedule retention/cleanup.
+- Node 0 (Greeting — out-of-band): Khi tạo conversation, assistant tự động gửi lời chào lấy từ persona (file ngoài code), lưu DB và index embedding. Không thuộc vòng xử lý mỗi tin nhắn.
+- Node 1 (Nhận câu hỏi): Xác thực `X-API-Key`, đảm bảo conversation, lưu message vào DB (message_id), enqueue embedding.
+- Node 2 (Xác định mong đợi/Intent): Phân loại ý định + quyết định clarify; có nhánh sớm cho clarify và warranty-serial. Nếu rơi vào nhánh sớm → stream câu hỏi/hoặc kết quả bảo hành; kết thúc lượt. Nếu không, tiếp tục các bước retrieve/respond.
+- Node 3 (Retrieve): Truy Chroma theo conversation/user, top-K + re-rank.
+- Node 4 (Trả lời): Build prompt (persona, xưng hô, intent, ngôn ngữ, history, retrieved), gọi LLM `gpt-oss` để sinh response, lưu response.
+- Node 5 (Hỏi tiếp/Clarify chung): Giữ nhịp, giúp quay lại vòng 1/2 cho lượt kế.
+- Node 6 (END): Đoạn kết, retention/cleanup (nếu áp dụng).
+
+### Vì sao thứ tự 0 → 1 → 2 là hợp lý?
+- Node 0 tách riêng khỏi vòng lặp vì chỉ diễn ra khi tạo conversation, giúp thiết lập persona/tông giọng và có lời chào sớm mà không chặn đường xử lý chính.
+- Node 1 trước Node 2 vì hệ thống cần lưu tin nhắn user vào DB để:
+	- Phân loại intent dựa trên history bền vững (không phụ thuộc RAM tạm thời)
+	- Lọc truy vấn Chroma theo conversation/user từ metadata của message
+- Node 2 ngay sau Node 1 để có thể rẽ nhánh sớm (clarify/warranty-serial) rồi kết thúc lượt, đảm bảo độ phản hồi nhanh và logic tuyến tính, trước khi tiêu tốn tài nguyên cho retrieve/LLM.
+
+## Đồ thị LangGraph (Nodes & Edges)
+
+Entry point: `classify`
+
+Streaming graph
+- Nodes: `classify` → `retrieve` → `respond_stream`
+- Edges:
+	- `classify` → `retrieve`
+	- `retrieve` → `respond_stream`
+	- `respond_stream` → `END`
+
+Mapping code → node
+- `classify` → `agent.langgraph_flow.classify_node`
+- `retrieve` → `agent.langgraph_flow.retrieve_node`
+- `respond_stream` → `agent.langgraph_flow.stream_respond_node`
+
+Mở rộng (đề xuất để thuần graph hơn với early exits)
+- Bổ sung nodes: `clarify_stream` và `warranty_stream` (đã có sẵn trong code), và dùng conditional edges từ `classify`:
+	- Nếu `clarify_needed` → `clarify_stream` → `END`
+	- Nếu `intent == 'warranty'` và (có serial hợp lệ hoặc đang chờ serial) → `warranty_stream` → `END`
+	- Ngược lại → `retrieve` → `respond_stream` → `END`
+
+Early exits (được xử lý ở API trước khi vào các node tiếp theo)
+- Clarify Early Exit: nếu `clarify_needed == true` → stream 1 câu hỏi làm rõ và `return` (kết thúc lượt).
+- Warranty Early Exit: nếu thỏa điều kiện bảo hành (intent = `warranty` kèm serial, hoặc lượt trước đang chờ serial và lượt này có serial hợp lệ) → trả kết quả bảo hành và `return`.
+
+Gợi ý mở rộng (nếu muốn thuần “graph” hơn)
+- Có thể bổ sung các node phụ và `add_conditional_edges`:
+	- `classify` → (`clarify` | `warranty_direct` | `retrieve`) dựa trên điều kiện state.
+	- `clarify` → `END` (kết thúc lượt); lượt sau quay lại `classify` do endpoint khởi tạo lại state.
+	- `warranty_direct` → `END` (kết thúc lượt); tương tự clarify.
 
 ## AgentState (rút gọn)
 - conversation_id
@@ -141,3 +188,24 @@ Gợi ý triển khai
 - PERSONA_PATH (default: ./prompts/system_persona_vi.md)
 - PERSONA_MAX_CHARS (default: 4000)
 - INTENT_CONFIDENCE_THRESHOLD (default: 0.5)
+
+## Nhánh chuyên biệt: Warranty (bảo hành)
+
+- Kích hoạt khi: (a) intent = `warranty` và không cần làm rõ, hoặc (b) ở lượt trước trợ lý vừa yêu cầu số serial/nhắc quy tắc nhập serial và lượt này người dùng gửi serial.
+- Nếu chưa có serial trong câu người dùng gần nhất:
+	- Hỏi: "Quý khách vui lòng cung cấp số serial của sản phẩm để em kiểm tra thời hạn bảo hành ạ?" (giữ nguyên định dạng SSE/data: {"chunk": ...}).
+- Nếu đã yêu cầu serial ở lượt trước nhưng vẫn không trích xuất được serial hợp lệ:
+	- Nhắc rõ quy tắc: "Em chưa nhận diện được số serial hợp lệ. Quý khách vui lòng nhập số serial (3–32 ký tự, gồm chữ cái, chữ số hoặc dấu gạch nối), ví dụ: ABC123-XYZ."
+- Quy tắc nhận diện serial: chuỗi 3–32 ký tự gồm [A–Z, a–z, 0–9, '-'] (không khoảng trắng nội bộ).
+- Khi có serial hợp lệ, trả kết quả ngay (không đi qua bước retrieve/LLM trả lời nội dung khác ở lượt này):
+	- Nếu tìm thấy: "Thông tin bảo hành: Sản phẩm '<product_name>', Serial '<serial>', hết bảo hành vào ngày <date>. Quý khách có cần em hỗ trợ gì thêm không ạ?"
+	- Nếu không tìm thấy: "Số serial này hiện chưa có trên hệ thống. Quý khách vui lòng gọi hotline để được hỗ trợ thêm ạ. Quý khách có cần em hỗ trợ gì thêm không ạ?"
+- Kết thúc lượt sau khi trả lời; lượt tiếp theo quay lại vòng xác định intent (classify). Trạng thái "đang chờ serial" chỉ được giữ nếu ngay trước đó trợ lý thật sự yêu cầu/nhắc quy tắc serial; trả lời kết quả bảo hành không giữ trạng thái này.
+- Các tin nhắn trợ lý phát sớm (câu hỏi serial/nhắc quy tắc/kết quả bảo hành) đều được lưu vào DB và upsert embedding để đảm bảo ngữ cảnh lượt sau.
+- Định dạng message/SSE giữ nguyên như hiện tại.
+
+Ghi chú (dev tạm thời):
+- Trong môi trường demo hiện tại, lookup bảo hành đang được hardcode để test nhanh:
+	- Serial `0979825281` → trả "S23 Ultra", hết bảo hành ngày `12/8/2026`.
+	- Serial khác → coi như không có trên hệ thống → gợi ý gọi hotline.
+- Khi kết nối database thật, phần tra cứu sẽ chuyển sang query `warranty_records` như mô tả ban đầu, không thay đổi giao tiếp/SSE.

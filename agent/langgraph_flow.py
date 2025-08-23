@@ -17,6 +17,7 @@ from agent.retriever import query_vectors, simple_rerank
 from agent.ollama_client import generate_text, generate_text_stream
 import os
 import pathlib
+import re
 
 # --- Env-configurable knobs ---
 INTENT_CONFIDENCE_THRESHOLD: float = float(os.environ.get("INTENT_CONFIDENCE_THRESHOLD", "0.5"))
@@ -388,6 +389,92 @@ async def stream_respond_node(state: AgentState) -> AsyncGenerator[Dict[str, str
     except Exception as e:
         logger.error(f"Stream Respond node: Error generating response: {e}", exc_info=True)
         yield {"response": "Sorry, I encountered an error while streaming."}
+
+
+async def clarify_stream_node(state: AgentState) -> AsyncGenerator[Dict[str, str], None]:
+    """Stream the first clarify question (language-aware) and end turn."""
+    lang = state.get("preferred_language") or "vi"
+    questions = state.get("clarify_questions") or []
+    if questions and isinstance(questions, list) and isinstance(questions[0], str) and questions[0].strip():
+        yield {"response": questions[0]}
+        return
+    # Fallback default clarify question
+    default_vi = "Để em hỗ trợ chính xác, quý khách đang cần tư vấn lắp ráp máy, hỏi thông tin mua hàng hay bảo hành ạ?"
+    default_en = "To help you accurately, are you looking for PC build advice, shopping/product info, or warranty support?"
+    yield {"response": default_en if lang == "en" else default_vi}
+
+
+async def warranty_stream_node(state: AgentState) -> AsyncGenerator[Dict[str, str], None]:
+    """Handle warranty flow streaming: ask for serial, validate, or return result (hardcoded demo)."""
+    # Extract latest user text and previous assistant text
+    latest_text = ""
+    prev_assistant = ""
+    seen_user = False
+    for msg in reversed(state.get("chat_history", [])):
+        role = msg.get("role") if isinstance(msg, dict) else getattr(msg, "role", None)
+        content = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", None)
+        if not seen_user:
+            if role == "user":
+                latest_text = str(content or "")
+                seen_user = True
+            continue
+        else:
+            if role == "assistant":
+                prev_assistant = str(content or "")
+                break
+
+    asked_for_serial = False
+    if prev_assistant:
+        pa = prev_assistant.lower()
+        asked_for_serial = ("vui lòng cung cấp số serial" in pa) or ("số serial hợp lệ" in pa)
+
+    # Detect serial: require at least one digit, length 3-32, alnum or '-'
+    try:
+        m = re.search(r"(?=.*\d)([A-Za-z0-9\-]{3,32})", latest_text)
+    except Exception:
+        m = None
+
+    if not m:
+        invalid_msg = (
+            "Em chưa nhận diện được số serial hợp lệ. Quý khách vui lòng nhập số serial (3–32 ký tự, gồm chữ cái, chữ số hoặc dấu gạch nối, và có ít nhất 1 chữ số), ví dụ: ABC123-XYZ."
+            if asked_for_serial else
+            "Quý khách vui lòng cung cấp số serial của sản phẩm để em kiểm tra thời hạn bảo hành ạ?"
+        )
+        yield {"response": invalid_msg}
+        return
+
+    serial = m.group(1).strip()
+    serial_norm = re.sub(r"\s+", "", serial)
+    # Build a persona-aware follow-up line
+    def _follow_up(lang: str) -> str:
+        try:
+            persona_path = os.environ.get("PERSONA_PATH", str(pathlib.Path.cwd() / "prompts/system_persona_vi.md"))
+            pp = pathlib.Path(persona_path)
+            if pp.exists():
+                for raw in pp.read_text(encoding="utf-8").splitlines():
+                    line = raw.strip()
+                    low = line.lower()
+                    if low.startswith("followup:") or low.startswith("follow-up:"):
+                        return line.split(":", 1)[1].strip()
+        except Exception:
+            pass
+        if lang == "en":
+            return "I can also help with PC builds, shopping info, or other warranty checks. What else can I do for you?"
+        return "Em còn có thể hỗ trợ lắp ráp máy, tư vấn mua hàng hoặc kiểm tra bảo hành khác. Quý khách muốn em giúp gì thêm không ạ?"
+
+    lang = state.get("preferred_language") or "vi"
+    tail = _follow_up(lang)
+    if serial_norm == "0979825281":
+        text = (
+            "Thông tin bảo hành: Sản phẩm 'S23 Ultra', Serial '0979825281', hết bảo hành vào ngày 12/8/2026. "
+            f"{tail}"
+        )
+    else:
+        text = (
+            "Số serial này hiện chưa có trên hệ thống. Quý khách vui lòng gọi hotline để được hỗ trợ thêm ạ. "
+            f"{tail}"
+        )
+    yield {"response": text}
 
 
 # --- Flow Definition ---

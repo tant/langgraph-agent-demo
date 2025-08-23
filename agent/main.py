@@ -278,6 +278,8 @@ async def stream_message_endpoint(conversation_id: str, request: CreateMessageRe
                     classify_node,
                     retrieve_node,
                     stream_respond_node,
+                    clarify_stream_node,
+                    warranty_stream_node,
                 )
 
                 logger.info(f"[{conversation_id}] Running classify/retrieve then streaming node directly")
@@ -298,19 +300,58 @@ async def stream_message_endpoint(conversation_id: str, request: CreateMessageRe
                     logger.error(f"[{conversation_id}] classify_node failed: {e}", exc_info=True)
                     classify_out = {"need_retrieval": False}
 
-                # Optionally run retrieve node
+                # Warranty early exit via node
                 try:
-                    # Clarify/farewell handling
-                    if classify_out.get("clarify_needed"):
-                        # Stream the first clarify question and end this turn
-                        questions_val = classify_out.get("clarify_questions")
-                        questions = questions_val if isinstance(questions_val, list) else []
-                        if questions and isinstance(questions[0], str):
-                            cq = questions[0]
-                            payload = json.dumps({"chunk": cq})
+                    if classify_out.get("intent") == "warranty" and not classify_out.get("clarify_needed"):
+                        warranty_full = ""
+                        async for chunk in warranty_stream_node(initial_state):
+                            response_chunk = chunk.get("response") if isinstance(chunk, dict) else str(chunk)
+                            if response_chunk is None:
+                                response_chunk = ""
+                            payload = json.dumps({"chunk": response_chunk})
                             yield f"data: {payload}\n\n"
                             await asyncio.sleep(0)
-                            return
+                            warranty_full += response_chunk
+                        if warranty_full:
+                            try:
+                                assistant_msg = await create_message(conversation_id=conv_uuid, sender="assistant", text=warranty_full)
+                                await embed_and_store_message(
+                                    message_id=str(assistant_msg.id),
+                                    conversation_id=str(conv_uuid),
+                                    user_id=conv.user_id,
+                                    text=warranty_full,
+                                )
+                            except Exception as se:
+                                logger.warning(f"[{conversation_id}] failed to save warranty node reply: {se}")
+                        return
+                except Exception as wf_err:
+                    logger.error(f"[{conversation_id}] warranty flow shortcut failed: {wf_err}", exc_info=True)
+
+                # Optionally run retrieve node
+                try:
+                    # Clarify early exit via node
+                    if classify_out.get("clarify_needed"):
+                        clarify_full = ""
+                        async for chunk in clarify_stream_node(initial_state):
+                            response_chunk = chunk.get("response") if isinstance(chunk, dict) else str(chunk)
+                            if response_chunk is None:
+                                response_chunk = ""
+                            payload = json.dumps({"chunk": response_chunk})
+                            yield f"data: {payload}\n\n"
+                            await asyncio.sleep(0)
+                            clarify_full += response_chunk
+                        if clarify_full:
+                            try:
+                                assistant_msg = await create_message(conversation_id=conv_uuid, sender="assistant", text=clarify_full)
+                                await embed_and_store_message(
+                                    message_id=str(assistant_msg.id),
+                                    conversation_id=str(conv_uuid),
+                                    user_id=conv.user_id,
+                                    text=clarify_full,
+                                )
+                            except Exception as se:
+                                logger.warning(f"[{conversation_id}] failed to save clarify node reply: {se}")
+                        return
 
                     if classify_out.get("need_retrieval"):
                         await retrieve_node(initial_state)

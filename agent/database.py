@@ -18,10 +18,10 @@ import os
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-from sqlalchemy import String, Text, DateTime, Integer, Uuid, func
+from sqlalchemy import String, Text, DateTime, Integer, Uuid, func, Date
 import uuid
 from typing import AsyncGenerator, Optional, List
-from datetime import datetime
+from datetime import datetime, date
 
 # --- Configuration ---
 DATABASE_URL = os.environ.get(
@@ -70,6 +70,19 @@ class Message(Base):
     
     def __repr__(self) -> str:
         return f"<Message(id={self.id}, conversation_id={self.conversation_id}, sender='{self.sender}')>"
+
+
+# --- Warranty Model ---
+class WarrantyRecord(Base):
+    __tablename__ = "warranty_records"
+
+    serial: Mapped[str] = mapped_column(String(64), primary_key=True)
+    product_name: Mapped[str] = mapped_column(String(255))
+    warranty_end_date: Mapped[date] = mapped_column(Date)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    def __repr__(self) -> str:
+        return f"<WarrantyRecord(serial='{self.serial}', product='{self.product_name}', end={self.warranty_end_date})>"
 
 
 # --- Database Initialization ---
@@ -131,3 +144,19 @@ async def get_messages_history(conversation_id: uuid.UUID) -> List[Message]:
         stmt = select(Message).where(Message.conversation_id == conversation_id).order_by(asc(Message.created_at))
         result = await session.execute(stmt)
         return list(result.scalars().all())
+
+
+# --- Warranty helpers ---
+async def get_warranty_by_serial(serial: str) -> Optional[WarrantyRecord]:
+    """Fetch a warranty record by serial if it exists."""
+    async with async_session() as session:
+        return await session.get(WarrantyRecord, serial)
+
+async def create_warranty_record(serial: str, product_name: str, warranty_end_date: date) -> WarrantyRecord:
+    """Create a new warranty record (utility for seeding/tests)."""
+    async with async_session() as session:
+        rec = WarrantyRecord(serial=serial, product_name=product_name, warranty_end_date=warranty_end_date)
+        session.add(rec)
+        await session.commit()
+        await session.refresh(rec)
+        return rec
