@@ -322,7 +322,6 @@ async def retrieve_node(state: AgentState) -> Dict[str, Any]:
             
         results = query_vectors(
             query_text=query_text,
-            collection_name="conversations_dev",  # Use default collection for now
             top_k=3,
             filter_metadata=filter_metadata or None
         )
@@ -404,15 +403,20 @@ async def clarify_stream_node(state: AgentState) -> AsyncGenerator[Dict[str, str
     yield {"response": default_en if lang == "en" else default_vi}
 
 
-async def warranty_stream_node(state: AgentState) -> AsyncGenerator[Dict[str, str], None]:
-    """Handle warranty flow streaming: ask for serial, validate, and return result via DB lookup only."""
+async def warranty_stream_node(state: AgentState) -> AsyncGenerator[Dict[str, Any], None]:
+    """Handle warranty flow streaming: ask for serial, validate, and return result via DB lookup only.
+
+    Emits dict chunks like {"response": str, "warranty_meta": {...}} so caller can persist metadata.
+    """
     # Extract latest user text and previous assistant text
     latest_text = ""
     prev_assistant = ""
+    asked_for_serial = False
     seen_user = False
     for msg in reversed(state.get("chat_history", [])):
         role = msg.get("role") if isinstance(msg, dict) else getattr(msg, "role", None)
         content = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", None)
+        meta = msg.get("metadata") if isinstance(msg, dict) else None
         if not seen_user:
             if role == "user":
                 latest_text = str(content or "")
@@ -421,16 +425,23 @@ async def warranty_stream_node(state: AgentState) -> AsyncGenerator[Dict[str, st
         else:
             if role == "assistant":
                 prev_assistant = str(content or "")
+                # Prefer metadata flag over string contains
+                if isinstance(meta, dict):
+                    mt = (meta.get("type") or "").lower()
+                    if mt in {"warranty_prompt", "warranty_prompt_invalid"}:
+                        asked_for_serial = True
                 break
 
-    asked_for_serial = False
-    if prev_assistant:
+    # Fallback detection via text if no metadata
+    if not asked_for_serial and prev_assistant:
         pa = prev_assistant.lower()
         asked_for_serial = ("vui lòng cung cấp số serial" in pa) or ("số serial hợp lệ" in pa)
 
     # Detect serial: require at least one digit, length 3-32, alnum or '-'
+    # Strict regex: 3–32 chars [A-Za-z0-9-], must include at least one digit, no spaces
     try:
-        m = re.search(r"(?=.*\d)([A-Za-z0-9\-]{3,32})", latest_text)
+        pattern = re.compile(r"(?<![A-Za-z0-9-])(?=[A-Za-z0-9-]*\d[A-Za-z0-9-]*)([A-Za-z0-9-]{3,32})(?![A-Za-z0-9-])")
+        m = pattern.search(latest_text or "")
     except Exception:
         m = None
 
@@ -440,11 +451,12 @@ async def warranty_stream_node(state: AgentState) -> AsyncGenerator[Dict[str, st
             if asked_for_serial else
             "Quý khách vui lòng cung cấp số serial của sản phẩm để em kiểm tra thời hạn bảo hành ạ?"
         )
-        yield {"response": invalid_msg}
+        meta_kind = {"warranty_meta": {"kind": "prompt_invalid" if asked_for_serial else "prompt"}}
+        yield {"response": invalid_msg, **meta_kind}
         return
 
     serial = m.group(1).strip()
-    serial_norm = re.sub(r"\s+", "", serial)
+    serial_norm = serial  # Do not collapse internal spaces; regex ensures none
     # Build a persona-aware follow-up line
     def _follow_up(lang: str) -> str:
         try:
@@ -488,7 +500,7 @@ async def warranty_stream_node(state: AgentState) -> AsyncGenerator[Dict[str, st
             f"Thông tin bảo hành: Sản phẩm '{record.product_name}', Serial '{serial_norm}', hết bảo hành vào ngày {date_vi}. "
             f"{tail}"
         )
-        yield {"response": text}
+        yield {"response": text, "warranty_meta": {"kind": "result", "found": True, "serial": serial_norm}}
         return
 
     # Not found in DB
@@ -496,7 +508,7 @@ async def warranty_stream_node(state: AgentState) -> AsyncGenerator[Dict[str, st
         "Số serial này hiện chưa có trên hệ thống. Quý khách vui lòng gọi hotline để được hỗ trợ thêm ạ. "
         f"{tail}"
     )
-    yield {"response": text}
+    yield {"response": text, "warranty_meta": {"kind": "result", "found": False, "serial": serial_norm}}
 
 
 # --- Flow Definition ---

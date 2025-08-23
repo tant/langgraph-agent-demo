@@ -82,6 +82,7 @@ curl -s -X GET "http://127.0.0.1:8000/conversations/$CONV_ID/history" \
 - OLLAMA_GENERATE_URL, OLLAMA_TAGS_URL, OLLAMA_EMBEDDING_URL (full endpoints)
 - DEFAULT_GENERATE_MODEL, DEFAULT_EMBEDDING_MODEL
 - CHROMA_PATH (default: ./database/chroma_db)
+- CHROMA_COLLECTION (default: conversations_dev)
 - DATABASE_URL (default: sqlite+aiosqlite:///./database/sqlite.db)
 - X_API_KEYS (comma‑separated dev keys; default includes `default-dev-key`)
 

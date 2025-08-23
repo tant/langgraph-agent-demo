@@ -9,7 +9,6 @@ This module provides functions to interact with ChromaDB for vector retrieval:
 
 import os
 import chromadb
-from chromadb import Documents, EmbeddingFunction, Embeddings
 from typing import List, Dict, Any, Optional
 import logging
 from agent.ollama_client import get_embedding
@@ -17,7 +16,8 @@ from agent.ollama_client import get_embedding
 # --- Configuration ---
 CHROMA_PATH = os.environ.get("CHROMA_PATH", "./database/chroma_db")
 DEFAULT_TOP_K = 3
-DEFAULT_COLLECTION_NAME = "conversations_dev"
+# Collection name can be overridden via env for dev/prod parity
+DEFAULT_COLLECTION_NAME = os.environ.get("CHROMA_COLLECTION", "conversations_dev")
 
 # --- Logging ---
 logger = logging.getLogger(__name__)
@@ -75,17 +75,21 @@ def query_vectors(
             n_results=top_k,
             where=chroma_where,
         )
-        
+
         # Format results
-        formatted_results = []
-        for i in range(len(results['ids'][0])):
+        formatted_results: List[Dict[str, Any]] = []
+        ids = results.get('ids') or [[]]
+        documents = results.get('documents') or [[]]
+        metadatas = results.get('metadatas') or [[]]
+        distances = results.get('distances') or [[]]
+        for i in range(len(ids[0])):
             formatted_results.append({
-                'id': results['ids'][0][i],
-                'document': results['documents'][0][i],
-                'metadata': results['metadatas'][0][i],
-                'distance': results['distances'][0][i],
+                'id': ids[0][i],
+                'document': documents[0][i],
+                'metadata': metadatas[0][i],
+                'distance': distances[0][i],
             })
-            
+
         logger.info(f"Retrieved {len(formatted_results)} results from ChromaDB")
         return formatted_results
         
@@ -162,7 +166,7 @@ def upsert_vectors(
         # Upsert into collection
         collection.upsert(
             ids=ids,
-            embeddings=embeddings,
+            embeddings=embeddings,  # chromadb accepts list[list[float]] via client adapter
             documents=documents,
             metadatas=metadatas,
         )

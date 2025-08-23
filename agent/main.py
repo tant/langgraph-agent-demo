@@ -304,17 +304,21 @@ async def stream_message_endpoint(conversation_id: str, request: CreateMessageRe
                 try:
                     if classify_out.get("intent") == "warranty" and not classify_out.get("clarify_needed"):
                         warranty_full = ""
+                        last_meta = None
                         async for chunk in warranty_stream_node(initial_state):
                             response_chunk = chunk.get("response") if isinstance(chunk, dict) else str(chunk)
                             if response_chunk is None:
                                 response_chunk = ""
-                            payload = json.dumps({"chunk": response_chunk})
+                            # Capture optional warranty metadata from node
+                            if isinstance(chunk, dict) and "warranty_meta" in chunk:
+                                last_meta = chunk.get("warranty_meta")
+                            payload = json.dumps({"chunk": response_chunk, "warranty_meta": last_meta} if last_meta else {"chunk": response_chunk})
                             yield f"data: {payload}\n\n"
                             await asyncio.sleep(0)
                             warranty_full += response_chunk
                         if warranty_full:
                             try:
-                                assistant_msg = await create_message(conversation_id=conv_uuid, sender="assistant", text=warranty_full)
+                                assistant_msg = await create_message(conversation_id=conv_uuid, sender="assistant", text=warranty_full, metadata={"type": "warranty_result" if (last_meta and last_meta.get("kind") == "result") else "warranty_prompt"})
                                 await embed_and_store_message(
                                     message_id=str(assistant_msg.id),
                                     conversation_id=str(conv_uuid),
@@ -389,6 +393,25 @@ async def stream_message_endpoint(conversation_id: str, request: CreateMessageRe
                         chunk_index += 1
                 except Exception as e:
                     logger.error(f"[{conversation_id}] Error in streaming node: {e}", exc_info=True)
+                # Optional generic follow-up after normal answer (Fix 3)
+                try:
+                    # Load persona FollowUp once
+                    persona_path = os.environ.get("PERSONA_PATH", str(pathlib.Path.cwd() / "prompts/system_persona_vi.md"))
+                    pp = pathlib.Path(persona_path)
+                    follow_line = None
+                    if pp.exists():
+                        for raw in pp.read_text(encoding="utf-8").splitlines():
+                            line = raw.strip()
+                            if line.lower().startswith("followup:") or line.lower().startswith("follow-up:"):
+                                follow_line = line.split(":", 1)[1].strip()
+                                break
+                    if follow_line:
+                        payload = json.dumps({"chunk": "\n" + follow_line})
+                        yield f"data: {payload}\n\n"
+                        await asyncio.sleep(0)
+                        full_response += "\n" + follow_line
+                except Exception as fu_err:
+                    logger.warning(f"[{conversation_id}] follow-up append failed: {fu_err}")
             
             except Exception as e:
                 logger.error(f"[{conversation_id}] Error during stream generation: {e}", exc_info=True)
