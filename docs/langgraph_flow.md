@@ -3,19 +3,20 @@
 Tài liệu mô tả flow LangGraph, các node chính và các quyết định triển khai (ChromaDB local, bge-m3 1024-d, backend tách Gradio).
 
 ## Luồng tổng thể (rút gọn)
-0. START -> 1. Nhận câu hỏi -> 2. Xác định mong đợi (intent)
-- Nếu cần làm rõ (clarify) -> hỏi lại (tối đa 3 lần) -> nếu vẫn chưa rõ thì chào lịch sự và END
+0. START -> 0.5. Greeting (assistant chủ động chào) -> 1. Nhận câu hỏi -> 2. Xác định mong đợi (intent)
+- Nếu cần làm rõ (clarify) -> hỏi lại ngay 1 câu ngắn, lịch sự; lặp lại vòng làm rõ cho đến khi đủ tự tin về intent (không đặt trần số lần)
 - Nếu đã rõ intent:
 	- Nếu cần retrieve -> 3. Retrieve (ChromaDB) -> 4. Trả lời (LLM) -> 5. Hỏi user có muốn tiếp?
 	- Nếu không cần retrieve -> 4. Trả lời -> 5. Hỏi user có muốn tiếp?
 - Nếu dừng -> 6. END
 
 ## Nodes (tóm tắt hành động)
+- Node 0 (Greeting): khi tạo conversation, assistant tự động gửi lời chào lấy từ persona (file ngoài code), lưu vào DB và index embedding.
 - Node 1 (Nhận câu hỏi): xác thực token (`X-API-Key`), tạo/đảm bảo conversation, lưu message raw vào DB (message_id).
-- Node 2 (Xác định mong đợi/Intent): dùng LLM xác định ý định người dùng và nhu cầu làm rõ; nếu cần clarify thì hỏi lại (tối đa 3 lần) trước khi chuyển bước.
+- Node 2 (Xác định mong đợi/Intent): dùng LLM xác định ý định người dùng và nhu cầu làm rõ; nếu cần clarify thì hỏi lại ngay một câu ngắn, lịch sự (không giới hạn số lần), sau đó kết thúc lượt. Khi user trả lời, quay lại Node 2 để xác định lại.
 - Node 3 (Retrieve): truy Chroma (filter theo conversation/user), trả về top-K, re-rank theo freshness/same-conversation.
-- Node 4 (Trả lời): build prompt (history + retrieved + intent), gọi LLM (`gpt-oss`) để sinh response, lưu response.
-- Node 5 (Hỏi tiếp): xác định ý định user -> quay lại Node 1 hoặc END.
+- Node 4 (Trả lời): build prompt (persona + quy tắc xưng hô + detected intent + ngôn ngữ ưu tiên + history + retrieved), gọi LLM (`gpt-oss`) để sinh response, lưu response.
+- Node 5 (Hỏi tiếp): giữ nhịp hội thoại, nếu user muốn tiếp tục thì quay lại Node 1/2 tùy ngữ cảnh.
 - Node 6 (END): mark conversation inactive, schedule retention/cleanup.
 
 ## AgentState (rút gọn)
@@ -23,12 +24,12 @@ Tài liệu mô tả flow LangGraph, các node chính và các quyết định t
 - user_id
 - chat_history (list of {id, role, content, created_at})
 - last_updated
-- metadata (dict)
-	- intent: Optional[str] — assemble_pc | shopping | warranty | unknown
-	- intent_confidence: Optional[float]
-	- need_retrieval_hint: Optional[bool]
-	- clarify_questions: Optional[List[str]]
-	- clarify_attempts: Optional[int] — số lần đã hỏi lại trong vòng clarify
+- intent: Optional[str] — assemble_pc | shopping | warranty | unknown
+- intent_confidence: Optional[float]
+- need_retrieval_hint: Optional[bool]
+- clarify_questions: Optional[List[str]]
+- clarify_attempts: Optional[int] — số lần đã hỏi lại trong vòng clarify (chỉ để quan sát/analytics, không để cắt hội thoại)
+- preferred_language: Optional[str] — 'vi' (mặc định) hoặc 'en' nếu phát hiện tiếng Anh chiếm ưu thế
 
 > Ghi chú: Message id dùng làm reference để upsert vectors vào Chroma (vector id = message_id).
 
@@ -90,6 +91,8 @@ Từ khóa (song ngữ Việt–Anh)
 
 Lưu ý ngôn ngữ
 - Mặc định phản hồi và câu hỏi làm rõ bằng tiếng Việt, trừ khi người dùng yêu cầu/viết chủ yếu bằng tiếng Anh.
+- Phát hiện ngôn ngữ dựa trên tin nhắn đầu tiên của user; khi không chắc, mặc định 'vi'.
+- Quy tắc xưng hô cố định: AI xưng "em", gọi người dùng là "quý khách".
 - Khi xây dựng prompt ở bước trả lời, thêm chỉ dẫn: "Hãy trả lời bằng tiếng Việt, ngắn gọn, lịch sự" (trừ trường hợp người dùng muốn tiếng Anh).
 
 ### Vòng Clarify (không giới hạn cố định)
@@ -103,8 +106,14 @@ Lưu ý ngôn ngữ
 Gợi ý triển khai
 - Thêm các trường nêu trên vào AgentState (metadata) và truyền qua luồng.
 - Đếm `clarify_attempts` dựa trên số lượt assistant đã hỏi lại trong history (có thể đánh dấu bằng mẫu câu cố định hoặc metadata nội bộ).
-- Trong endpoint stream: nếu `clarify_questions` có giá trị và `clarify_attempts < 3` → stream ngay câu hỏi làm rõ, lưu message assistant (loại “clarify”), sau đó kết thúc lượt.
-- Nếu `clarify_attempts >= 3` và vẫn unknown → stream thông điệp kết thúc lịch sự và END.
+- Trong endpoint stream: nếu `clarify_questions` có giá trị → stream ngay câu hỏi làm rõ (câu đầu tiên), lưu message assistant (loại “clarify”), sau đó kết thúc lượt; chờ user phản hồi rồi quay lại Node 2.
+- Không áp dụng ngưỡng dừng cứng theo số lần; luôn kiên nhẫn và khéo léo dẫn dắt về 3 nhóm nhu cầu chính.
+
+### Persona bên ngoài code
+
+- Persona được lưu trong file ngoài code, ví dụ: `prompts/system_persona_vi.md` và nạp qua biến môi trường `PERSONA_PATH`.
+- Lời chào đầu cuộc hội thoại (Node 0) lấy từ dòng có tiền tố "Greeting:" trong persona.
+- Nội dung persona được đính kèm vào prompt trả lời và bị giới hạn kích thước bởi `PERSONA_MAX_CHARS` để an toàn.
 
 ## Error & Observability
 - Jobs (embedding/upsert) phải có retry/backoff; nếu thất bại, mark message.metadata['embed_failed']=true.
@@ -127,3 +136,8 @@ Gợi ý triển khai
 - DATABASE_URL (sqlite:///./database/sqlite.db or Postgres URL)
 - REDIS_URL (optional)
 	- Note: Redis is optional for local dev; in production enable Redis for caching, locks, and distributed rate-limiting.
+
+### Bổ sung (env mới liên quan đến persona/intent)
+- PERSONA_PATH (default: ./prompts/system_persona_vi.md)
+- PERSONA_MAX_CHARS (default: 4000)
+- INTENT_CONFIDENCE_THRESHOLD (default: 0.5)

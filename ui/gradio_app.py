@@ -334,7 +334,18 @@ def start_new_conversation(api_base_input: str, api_key_input: str) -> Tuple[str
         user_id = f"gradio-user-{uuid.uuid4()}"
         current_conversation_id = create_conversation(api_base, api_key, user_id)
         ui_log(f"Started new conversation: {current_conversation_id}")
-        return f"New conversation started: {current_conversation_id}", [], ""
+        # Fetch history immediately so the greeting (assistant) shows up in UI
+        try:
+            msgs = get_history(api_base, api_key, current_conversation_id)
+            # Map API messages to Chatbot(messages) format
+            chat_history = [
+                {"role": m.get("sender", "assistant"), "content": m.get("content", "")}
+                for m in msgs
+            ]
+        except Exception as he:
+            ui_log(f"Failed to fetch history for new conversation: {he}")
+            chat_history = []
+        return f"New conversation started: {current_conversation_id}", chat_history, ""
     except Exception as e:
         ui_log(f"Could not start new conversation: {e}")
         return f"Error: {e}", [], ""

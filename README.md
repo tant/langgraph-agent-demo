@@ -7,7 +7,7 @@ Status: Phase 1 COMPLETE • Latest: v0.1.0
 
 ---
 
-## � Quick Start
+## 🚀 Quick Start
 
 Prereqs (use uv as the Python runner):
 
@@ -30,6 +30,8 @@ uv run uvicorn agent.main:app --reload --host 0.0.0.0 --port 8000
 ```bash
 curl -sS -X GET http://127.0.0.1:8000/healthz -w "\nHTTP_STATUS:%{http_code}\n"
 ```
+
+Tip: When you create a conversation, the assistant will auto-post a greeting loaded from the persona file (see Persona below). You’ll see it in history immediately.
 
 3) Run UI (optional):
 ```bash
@@ -83,13 +85,25 @@ curl -s -X GET "http://127.0.0.1:8000/conversations/$CONV_ID/history" \
 - DATABASE_URL (default: sqlite+aiosqlite:///./database/sqlite.db)
 - X_API_KEYS (comma‑separated dev keys; default includes `default-dev-key`)
 
+Persona & intent (flow) settings:
+- PERSONA_PATH (default: ./prompts/system_persona_vi.md)
+  - The file contains an editable Vietnamese persona and a line starting with `Greeting:` used to seed the conversation automatically at creation.
+- PERSONA_MAX_CHARS (default: 4000)
+  - Maximum persona characters included in the prompt for safety.
+- INTENT_CONFIDENCE_THRESHOLD (default: 0.5)
+  - Threshold for intent classification; below this the agent asks a polite clarify question instead of answering.
+
+Language & style defaults:
+- Vietnamese-first responses unless the user writes mainly in English.
+- Pronouns: AI refers to itself as “em” and the user as “quý khách”.
+
 Notes:
 - ChromaDB persists under `database/chroma_db/`.
 - `.env.local` is auto‑loaded by scripts to pick up these variables when present.
 
 ---
 
-## � Repo Layout
+## 🗂️ Repo Layout
 
 - `agent/` — FastAPI app, LangGraph nodes/flows
 - `docs/` — design docs (architecture, flow, retrieval, security, ops)
@@ -100,10 +114,16 @@ Notes:
 
 ---
 
-## � More
+## 📚 More
 
 See `docs/` for in‑depth design, operations, and testing:
 - `docs/overview.md`, `docs/architecture.md`, `docs/langgraph_flow.md`, `docs/retrieval.md` …
+
+Try tests locally:
+
+```bash
+uv run pytest -q
+```
 
 ## 📄 License
 

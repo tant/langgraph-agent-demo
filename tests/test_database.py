@@ -4,8 +4,8 @@ Unit tests for the database module.
 
 import pytest
 import asyncio
-from unittest.mock import patch, MagicMock
-from agent.database import create_conversation, get_conversation, create_message, get_messages_history
+from unittest.mock import patch, MagicMock, AsyncMock
+from agent.database import create_conversation, get_conversation
 import uuid
 
 # We'll need to mock the SQLAlchemy async session and engine for unit tests
@@ -16,7 +16,13 @@ def mock_session():
     """Fixture to provide a mocked async session."""
     with patch('agent.database.async_session') as mock_sessionmaker:
         mock_session = MagicMock()
-        mock_sessionmaker.return_value.__aenter__.return_value = mock_session
+        # async context manager protocol
+        mock_sessionmaker.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_sessionmaker.return_value.__aexit__ = AsyncMock(return_value=None)
+        # async methods on session
+        mock_session.commit = AsyncMock()
+        mock_session.refresh = AsyncMock()
+        mock_session.get = AsyncMock()
         yield mock_session
 
 def test_create_conversation(mock_session):
@@ -30,7 +36,10 @@ def test_create_conversation(mock_session):
     # Configure the mock session
     mock_session.get.return_value = mock_conversation
     # Mock the refresh to set attributes on the mock
-    mock_session.refresh.side_effect = lambda obj: setattr(obj, 'id', mock_conversation.id) or setattr(obj, 'user_id', mock_conversation.user_id)
+    async def _refresh(obj):
+        setattr(obj, 'id', mock_conversation.id)
+        setattr(obj, 'user_id', mock_conversation.user_id)
+    mock_session.refresh.side_effect = _refresh
     
     # Run the async function in a new event loop to avoid issues with pytest's default loop
     async def run_test():
