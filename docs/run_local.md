@@ -1,100 +1,72 @@
 # Chạy cục bộ (Developer Quickstart)
 
-uv là trình quản lý Python/venv nhanh và có thể chạy script kèm phụ thuộc theo yêu cầu. Dưới đây là cách chạy dự án bằng uv theo hướng dẫn chính thức.
+`uv` là trình quản lý Python/venv nhanh và có thể chạy script kèm phụ thuộc theo yêu cầu. Dưới đây là cách chạy dự án bằng `uv`.
 
-1) Cài đặt uv và Python (một lần):
+### 1. Chuẩn bị (làm một lần)
 
 ```bash
 # Cài uv (xem thêm: https://docs.astral.sh/uv/getting-started/installation/)
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# (Tùy chọn) Cài Python do uv quản lý
-uv python install 3.12
-```
-
-2) Chuẩn bị môi trường:
-
-```bash
-# Tạo venv nếu bạn muốn venv cục bộ (tùy chọn)
+# Tạo venv và cài đặt phụ thuộc
 uv venv
+uv sync
 
-# Tạo file biến môi trường (nếu cần)
+# Tạo file biến môi trường từ file ví dụ
 cp -n .env.local.example .env.local 2>/dev/null || true
 ```
 
-3) Đảm bảo Ollama đang chạy và model đã được kéo về:
+### 2. Đảm bảo Ollama đang chạy
+
+Đảm bảo dịch vụ Ollama đang hoạt động và các model cần thiết (`gpt-oss`, `bge-m3`, `phi-3`, etc.) đã được tải về.
 
 ```bash
-# Cách 1: dùng tiện ích sẵn có (khuyến nghị)
-uv run scripts/check_ollama.py --probe
+# Kiểm tra các model đã có
+ollama list
 
-# Cách 2: thủ công
-ollama ls
-# Kiểm tra các model cần: gpt-oss (gen), bge-m3 (embeddings)
+# Nếu thiếu, tải về
+ollama pull gpt-oss
+ollama pull bge-m3
 ```
 
-Mẹo: nếu thiếu model, chạy `ollama pull gpt-oss` và/hoặc `ollama pull bge-m3`.
+### 3. Index dữ liệu (nếu cần)
 
-4) Chạy backend (FastAPI) bằng uv + uvicorn:
+Chạy script để nạp và index các tài liệu từ thư mục `knowledge/` vào ChromaDB.
+
+```bash
+# Xóa collection cũ và index lại từ đầu
+uv run scripts/index_knowledge.py --source knowledge/ --collection conversations_dev --clear
+
+# Index dữ liệu bảo hành từ file CSV
+uv run scripts/upsert_warranty_csv.py --file knowledge/warranty.csv
+```
+
+### 4. Chạy Backend (FastAPI)
+
+Mở một terminal và chạy lệnh sau để khởi động server backend.
 
 ```bash
 uv run uvicorn agent.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-5) Chạy script index kiến thức bằng uv run (đã có metadata PEP 723 trong file):
+### 5. Chạy Frontend (Gradio UI)
 
-```bash
-uv run scripts/index_knowledge.py --source knowledge/ --collection conversations_dev
-```
-
-Tùy chọn:
-
-- Xóa và tạo lại collection trước khi index:
-```bash
-uv run scripts/index_knowledge.py --source knowledge/ --collection conversations_dev --clear
-```
-
-Biến môi trường ảnh hưởng:
-
-- `CHROMA_PATH` (mặc định `./database/chroma_db/`) — đường dẫn lưu trữ Chroma
-- `OLLAMA_EMBEDDING_URL` (mặc định `http://localhost:11434/api/embeddings`)
-- `EMBEDDING_MODEL` (mặc định `bge-m3`)
-- `CHUNK_SIZE` (mặc định `400`, chia theo số từ — chunking đơn giản)
-
-Thêm (mới): Ollama endpoint configuration
-
-- `OLLAMA_BASE_URL` (ví dụ `http://localhost:11434` or `http://sstc-llm:11434`) — base URL cho Ollama. Nếu đặt, các endpoint phía dưới mặc định sẽ được build từ giá trị này.
-- `OLLAMA_GENERATE_URL` — URL đầy đủ cho endpoint generate (ví dụ `${OLLAMA_BASE_URL}/api/generate`).
-- `OLLAMA_EMBEDDING_URL` — URL đầy đủ cho endpoint embeddings (ví dụ `${OLLAMA_BASE_URL}/api/embeddings`).
-- `OLLAMA_TAGS_URL` — URL đầy đủ cho endpoint tags (ví dụ `${OLLAMA_BASE_URL}/api/tags`).
-- `DEFAULT_GENERATE_MODEL` — model mặc định cho generate (mặc định `gpt-oss`).
-- `DEFAULT_EMBEDDING_MODEL` — model mặc định cho embeddings (mặc định `bge-m3`).
-
-Ghi chú:
-- `scripts/check_ollama.py` và `agent/ollama_client.py` sẽ tự nạp `.env.local` (nếu tồn tại) trước khi xây URL. Điều này cho phép bạn cấu hình host cụ thể (ví dụ `sstc-llm`) trong `.env.local` mà không cần export thủ công trong shell.
-- Nếu bạn muốn ghi đè giá trị tạm thời cho một lần chạy, export biến trước khi gọi `uv run`, ví dụ:
-
-```bash
-export OLLAMA_BASE_URL="http://sstc-llm:11434"
-uv run scripts/check_ollama.py --probe
-```
-
-Hoặc export chỉ endpoint embeddings (không cần base):
-
-```bash
-export OLLAMA_EMBEDDING_URL="http://sstc-llm:11434/api/embeddings"
-uv run scripts/check_ollama.py --probe
-```
-
-6) Chạy Gradio UI (tùy chọn) ở terminal khác:
+Mở một terminal **khác** và chạy lệnh sau để khởi động giao diện người dùng.
 
 ```bash
 uv run --with gradio ui/gradio_app.py
 ```
 
-7) Kiểm thử nhanh: gửi request mẫu tới API và quan sát logs.
+Sau khi chạy, bạn có thể truy cập giao diện Gradio trong trình duyệt (thường là tại `http://127.0.0.1:7860`).
 
-Lưu ý quan trọng về uv run:
-- Nếu chạy trong thư mục có pyproject.toml nhưng script KHÔNG phụ thuộc vào project, thêm cờ `--no-project` trước tên script.
-- Có thể thêm phụ thuộc tạm thời bằng `--with pkg` (ví dụ: `uv run --with rich your.py`).
-- Chạy uvicorn qua uv: `uv run uvicorn agent.main:app --reload --host 0.0.0.0 --port 8000`
+### 6. Kiểm thử nhanh
+
+Bạn có thể sử dụng các script trong `scripts/` hoặc gửi request API trực tiếp để kiểm tra hoạt động của hệ thống.
+
+```bash
+# Gửi một tin nhắn mẫu
+sh scripts/send_message.sh "Xin chào"
+
+# Kiểm tra streaming
+uv run scripts/test_ollama_stream.py
+```

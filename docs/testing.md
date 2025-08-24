@@ -4,56 +4,56 @@
 Ngắn, có thể thực thi: đảm bảo correctness (unit), integration (message→worker→vector), performance (load), và resilience (chaos).
 
 ## Unit tests
-- Test business logic: session management, chunking, retriever ranking, idempotent upsert.
-- Run fast, isolated: pytest, mock external dependencies (Ollama, Chroma client).
+- **Logic nghiệp vụ**: Test các node trong LangGraph (chào hỏi, phân loại, chia tay), logic của Agent-Tool, các hàm xử lý công cụ (tra cứu DB, RAG).
+- **Thành phần cốt lõi**: Test session management, chunking, ranking của retriever, idempotent upsert.
+- **Chạy nhanh, cô lập**: Dùng `pytest`, mock các phụ thuộc bên ngoài (Ollama, Chroma client).
 
 ## Integration tests
-- End-to-end: send message -> worker processes embedding -> vector exists in Chroma -> retrieval returns context.
-- Test env: use SQLite + in-memory Chroma or testcontainers for Chroma/Ollama in CI.
-- Deterministic CI rules: seed DB, teardown between tests, set timeouts, avoid relying on external Redis in dev.
+- **Luồng End-to-End**: Gửi tin nhắn -> LangGraph chạy đúng luồng -> Agent gọi đúng tool -> Dữ liệu được trả về chính xác.
+- **Streaming UI**: Viết script (ví dụ: `scripts/test_ollama_stream.py`) để kết nối tới endpoint streaming và xác nhận nhận được các chunk dữ liệu đúng định dạng.
+- **Cơ sở dữ liệu**: Kiểm tra việc ghi và đọc từ các bảng `conversations`, `messages`, và `feedback_logs`.
+- **Môi trường CI**: Sử dụng SQLite + ChromaDB trong bộ nhớ hoặc testcontainers cho Chroma/Ollama để đảm bảo môi trường kiểm thử nhất quán.
 
 ## Mocks / Fixtures
-- Provide fixtures to mock Ollama responses for generation and embeddings for speed in unit/CI tests.
-- Option: run a real local Ollama container in integration tests for higher fidelity.
+- Cung cấp fixtures để mock các phản hồi từ Ollama cho việc sinh văn bản và embeddings để tăng tốc độ trong unit tests và CI.
+- Chạy một container Ollama thật trong integration tests để có độ tin cậy cao hơn.
 
-## Contract / Security tests
-- API contract tests: validate OpenAPI responses, auth behavior, and error codes.
-- Security tests: prompt-injection checks, content-safety classifier smoke tests, dependency SCA scans in CI.
+## Kiểm thử Hợp đồng / Bảo mật
+- **API contract tests**: Xác thực các phản hồi của OpenAPI, hành vi xác thực, và mã lỗi.
+- **Security tests**: Kiểm tra prompt-injection, quét các lỗ hổng phụ thuộc (SCA) trong CI.
 
-## Load tests (example thresholds)
-- Tooling: k6 or JMeter.
-- Example target: 100 concurrent users; validate P95 ACK < 200ms; queue_length stays < 100 during sustained load.
-- Rate-limit validation: verify 5 req/s per user enforced and returns 429 when exceeded.
+## Kịch bản kiểm thử cho Tính năng Phase 2
 
-## Chaos & resilience
-- Scenarios: worker restarts, simulated Redis outage (run in integration environment with Redis), DLQ behavior.
-- Local/dev: if Redis not available, run no-Redis mode and validate degraded behavior.
+### a. Kiểm thử Streaming UI
+- **Mục tiêu**: Đảm bảo frontend nhận và hiển thị tin nhắn từ backend một cách mượt mà.
+- **Kịch bản**:
+    1.  Chạy script client kết nối tới endpoint `/chat/stream`.
+    2.  Gửi một tin nhắn.
+    3.  Xác nhận rằng client nhận được các chunk dữ liệu liên tục thay vì chờ toàn bộ phản hồi.
+    4.  Kiểm tra xử lý lỗi khi kết nối bị ngắt giữa chừng.
 
-## CI pipeline (recommended stages)
-1. Install deps
-2. Run unit tests (fast)
-3. Run smoke integration tests (start minimal services via testcontainers or local containers)
-4. Run contract tests
-5. Nightly/performance: run load and chaos tests separately (long-running)
+### b. Kiểm thử Vòng lặp Phản hồi
+- **Mục tiêu**: Đảm bảo phản hồi của người dùng được ghi nhận chính xác.
+- **Kịch bản**:
+    1.  Gửi một tin nhắn để nhận câu trả lời từ bot.
+    2.  Mô phỏng việc bấm nút 👍 hoặc 👎 qua một request API (nếu có endpoint) hoặc kiểm tra trực tiếp DB.
+    3.  Truy vấn bảng `feedback_logs` để xác nhận một bản ghi mới đã được tạo với đúng `message_id` và `feedback_type`.
 
-## Flakiness & best-practices
-- Isolate slow tests from unit/fast suites.
-- Use retries for non-deterministic infra in CI with limits and record flake metrics.
-- Set sensible timeouts and resource limits for tests.
+### c. Kiểm thử Luồng hội thoại đa ngôn ngữ
+- **Mục tiêu**: Đảm bảo bot có thể nhận diện và chuyển đổi ngôn ngữ.
+- **Kịch bản**:
+    1.  Bắt đầu hội thoại bằng tiếng Việt, xác nhận bot trả lời bằng tiếng Việt.
+    2.  Gửi tin nhắn yêu cầu chuyển sang tiếng Anh (ví dụ: "speak English please").
+    3.  Xác nhận các câu trả lời tiếp theo của bot đều bằng tiếng Anh.
 
 ## Example commands
 ```bash
 # unit
-pytest -q --maxfail=1 tests/unit
+pytest -q --maxfail=1 tests/
 
-# smoke integration (example using pytest markers)
+# integration (ví dụ dùng pytest markers)
 pytest -q -m integration
 
-# load (k6)
-k6 run scripts/load_test.js
+# Chạy kiểm thử streaming
+uv run scripts/test_ollama_stream.py
 ```
-
-## Quick checklist for PRs
-- Add unit tests for new logic.
-- If behavior touches embedding/indexing, add an integration smoke test that asserts vector upsert.
-- Run SCA scanner in CI and include security checklist for prompt handling.

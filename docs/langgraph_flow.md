@@ -1,466 +1,220 @@
-# LangGraph Flow — Tài liệu chi tiết
+# Đặc tả Kỹ thuật: Chatbot SSTC với Kiến trúc Lai (Hybrid Graph & Agent-Tool)
 
-Mô tả đầy đủ cấu trúc LangGraph, logic phân loại intent 2-nhánh (shopping + ### 5. Clarify Stream Node (Early Exit)
-**Kích hoạt**: `clari### 5. Clarify Stream Node (Early Exit)
-**Kích hoạt**: `clarify_needed = true`
+## 1. Tổng quan
 
-**LLM-Based Social Intent Detection**:
-Bot sử dụng LLM để detect và generate social responses thay vì pattern matching cứng nhắc:
+Tài liệu này mô tả đặc tả kỹ thuật để triển khai chatbot SSTC. Kiến trúc được sử dụng là một mô hình **lai (Hybrid)**, kết hợp giữa một đồ thị trạng thái có cấu trúc (Stateful Graph) để quản lý các giai đoạn của cuộc trò chuyện và một **Agent-Tool** mạnh mẽ để xử lý các nghiệp vụ cốt lõi. Mô hình này đảm bảo chatbot vừa có khả năng xử lý linh hoạt, vừa tuân thủ các quy tắc về trải nghiệm người dùng như chủ động chào hỏi và kết thúc một cách thân thiện.
 
-**LLM Processing**:
-- Phân tích user message để xác định có social/personal intent không
-- Generate phản hồi phù hợp với văn hóa và context
-- Giọng nữ, xưng "em", gọi "quý khách"
-- Đặt ranh giới hợp lý khi cần thiết
+Tất cả các mô hình ngôn ngữ (LLM) sẽ được cung cấp qua **Ollama**.
 
-**Ví dụ LLM Social Responses**:
-- "em khỏe không" → "Em khỏe, cảm ơn quý khách đã hỏi ạ"
-- "đi chơi không" → "Em đang làm việc ạ, không thể đi chơi được"  
-- "tên gì" → "Em là trợ lý AI của SSTC ạ"
-- "làm gì đây" → "Em đang hỗ trợ khách hàng ạ"
-- "có bạn trai không" → "Em là AI nên không có chuyện đó ạ"
+## 2. Quản lý phiên trò chuyện và lưu trữ lịch sử
 
-**Response Format**: `{LLM Social Response}. {Business Redirect}`
+-   Ngay khi khách hàng gửi tin nhắn đầu tiên, hệ thống sẽ tự động tạo một `conversation_id` mới (mã định danh phiên trò chuyện) **riêng biệt cho từng user**.
+-   Mỗi user khi bắt đầu phiên trò chuyện sẽ được gán một `conversation_id` riêng, không trùng lặp với bất kỳ user nào khác.
+-   Tất cả các tin nhắn (bao gồm cả từ user và assistant) sẽ được lưu trữ liên tục kèm theo `conversation_id` này.
+-   Dữ liệu hội thoại (session, messages, metadata) được lưu trữ và truy xuất **hoàn toàn độc lập** theo `conversation_id` và `user_id`, đảm bảo không có sự lẫn lộn giữa các user, kể cả khi nhiều người giao tiếp đồng thời.
+-   Điều này giúp bảo mật, cá nhân hóa và đảm bảo tính toàn vẹn dữ liệu cho từng khách hàng.
 
-**Standard Clarify** (khi LLM không detect social intent):
-- **VI**: "Dạ em rất vui được giúp ạ — quý khách đang cần tư vấn mua hàng, kiểm tra bảo hành hay muốn trò chuyện thôi ạ?"
-- **EN**: "Hi! I'm happy to help — are you looking for shopping advice, a warranty check, or just to chat?"
+**Triển khai thực tế:**
+-   Mỗi conversation được lưu trong bảng `conversations` với một `id` (UUID) duy nhất, gắn với `user_id` và metadata riêng.
+-   Mỗi message được lưu trong bảng `messages`, luôn gắn với một `conversation_id`.
+-   Các thao tác tạo, truy xuất, lưu trữ message/conversation đều dựa trên `conversation_id` và `user_id`, đảm bảo dữ liệu của từng user và từng phiên trò chuyện là hoàn toàn tách biệt, không thể lẫn lộn.
 
-**Ưu điểm LLM approach**:
-- ✅ **Flexible**: Hiểu được context và nuance
-- ✅ **Natural**: Generate responses tự nhiên, không cứng nhắc
-- ✅ **Adaptive**: Có thể handle các social intents mới
-- ✅ **Cultural**: Phù hợp với văn hóa và cách xưng hô Việt Nam
-- ✅ **Consistent**: Maintain giọng điệu và persona đồng nhất
+## 3. Kiến trúc Luồng (Graph Architecture)
 
-### 6. Warranty Stream Node (Early Exit)  
-**Kích hoạt**: intent=warranty và không cần clarify
+Hệ thống được xây dựng dưới dạng một đồ thị trạng thái trong `LangGraph` với các node và cạnh điều kiện được định nghĩa rõ ràng.
 
-**Serial Detection**:
-- **Regex**: `(?<![A-Za-z0-9-])(?=[A-Za-z0-9-]*\d[A-Za-z0-9-]*)([A-Za-z0-9-]{3,32})(?![A-Za-z0-9-])`
-- **Rules**: 3-32 chars, [A-Za-z0-9-], phải có ít nhất 1 số, không có space
-
-**Flow**:
-1. **Không có serial**: "Quý khách vui lòng cung cấp số serial..."
-2. **Serial invalid**: "Em chưa nhận diện được số serial hợp lệ..."
-3. **Serial hợp lệ**: 
-   - Query `warranty_records` table (DB-only)
-   - Format: "Thông tin bảo hành: Sản phẩm '{name}', Serial '{serial}', hết bảo hành vào ngày {d/m/y}"
-   - Append persona follow-up
-
-**Metadata Tracking**:
-- Lưu `warranty_meta: {kind: "prompt|result", found: bool, serial: str}`
-- Assistant message metadata: `type = "warranty_prompt|warranty_result"`
-
-### 7. Retrieve Node
-**Kích hoạt**: intent=shopping và need_retrieval=true
-
-**Processing**:
-- Query ChromaDB với `bge-m3` embeddings (1024-d)
-- Filter: conversation_id, user_id
-- Collection: `CHROMA_COLLECTION` env (default: `conversations_dev`)
-- Re-rank results với `simple_rerank()`
-
-**Output**: `retrieved_context` chunks cho shopping advice
-
-### 8. Stream Respond Node
-**Input**: persona (max `PERSONA_MAX_CHARS`), preferred_language, history, retrieved_context, detected intent
-
-**Prompt Building**:
-```
-System Persona: [persona content]
-Retrieved context: [chunks if any]
-Detected intent: shopping|warranty  # bias toward focused response
-Instruction: [VI/EN based on preferred_language]
-Conversation: [chat history]
-Assistant:
+```mermaid
+graph TD
+    A[START] --> B[greeting_node: Chào hỏi];
+    B --> C[Chờ Phản hồi Người dùng];
+    C --> D{router: Phân loại Intent};
+    D -->|intent == 'END'| E[farewell_node: Tạm biệt];
+    D -->|intent == 'AGENT_WORK'| F[agent_loop: Vòng lặp Agent-Tool];
+    F --> G{agent_loop_router: Kiểm tra kết quả Agent};
+    G -->|continue| F;
+    G -->|end| C;
+    E --> H[END];
 ```
 
-**Streaming**: Chunks qua `generate_text_stream()` → SSE format
-
-### 9. Persona Follow-up (Auto-append)
-**Source**: `FollowUp:` line từ persona file
-**Timing**: Sau khi stream_respond_node hoàn thành
-**Example**: "Em còn có thể hỗ trợ tư vấn mua hàng, kiểm tra bảo hành hoặc trò chuyện cùng quý khách — quý khách muốn em giúp gì thêm không ạ?"d = true`
-
-**Gentle Clarify Questions**:
-- **VI**: "Dạ em rất vui được giúp ạ — quý khách đang cần tư vấn mua hàng, kiểm tra bảo hành hay muốn trò chuyện thôi ạ?"
-- **EN**: "Hi! I'm happy to help — are you looking for shopping advice, a warranty check, or just to chat?"
-
-**Đặc điểm**:
-- Mở rộng hơn 2 intent (cho phép "just to chat")
-- Giọng nữ, nhẹ nhàng, không ép buộc
-- Cho phép social interaction tự nhiên
-- **END** turn sau khi hỏi
-
-### 6. Warranty Stream Node (Early Exit)  
-**Kích hoạt**: intent=warranty và không cần clarify
-
-**Serial Detection**:
-- **Regex**: `(?<![A-Za-z0-9-])(?=[A-Za-z0-9-]*\d[A-Za-z0-9-]*)([A-Za-z0-9-]{3,32})(?![A-Za-z0-9-])`
-- **Rules**: 3-32 chars, [A-Za-z0-9-], phải có ít nhất 1 số, không có space
-
-**Flow**:
-1. **Không có serial**: "Quý khách vui lòng cung cấp số serial..."
-2. **Serial invalid**: "Em chưa nhận diện được số serial hợp lệ..."
-3. **Serial hợp lệ**: 
-   - Query `warranty_records` table (DB-only)
-   - Format: "Thông tin bảo hành: Sản phẩm '{name}', Serial '{serial}', hết bảo hành vào ngày {d/m/y}"
-   - Append persona follow-up
-
-**Metadata Tracking**:
-- Lưu `warranty_meta: {kind: "prompt|result", found: bool, serial: str}`
-- Assistant message metadata: `type = "warranty_prompt|warranty_result"`
-
-### 7. Retrieve Node
-**Kích hoạt**: intent=shopping và need_retrieval=true
-
-**Processing**:
-- Query ChromaDB với `bge-m3` embeddings (1024-d)
-- Filter: conversation_id, user_id
-- Collection: `CHROMA_COLLECTION` env (default: `conversations_dev`)
-- Re-rank results với `simple_rerank()`
-
-**Output**: `retrieved_context` chunks cho shopping advice
-
-### 8. Stream Respond Node
-**Input**: persona (max `PERSONA_MAX_CHARS`), preferred_language, history, retrieved_context, detected intent
-
-**Prompt Building**:
-```
-System Persona: [persona content]
-Retrieved context: [chunks if any]
-Detected intent: shopping|warranty  # bias toward focused response
-Instruction: [VI/EN based on preferred_language]
-Conversation: [chat history]
-Assistant:
-```
-
-**Streaming**: Chunks qua `generate_text_stream()` → SSE format
-
-### 9. Persona Follow-up (Auto-append)
-**Source**: `FollowUp:` line từ persona file
-**Timing**: Sau khi stream_respond_node hoàn thành
-**Example**: "Em còn có thể hỗ trợ tư vấn mua hàng, kiểm tra bảo hành hoặc trò chuyện cùng quý khách — quý khách muốn em giúp gì thêm không ạ?"), xử lý ngôn ngữ, và các tính năng nâng cao.
-
-## Tổng quan hệ thống
-
-### Chính sách Intent (2 nhánh chính)
-- **shopping**: Tư vấn mua hàng, gợi ý sản phẩm, so sánh → yêu cầu retrieval từ knowledge base
-- **warranty**: Hỗ trợ bảo hành, kiểm tra serial → DB-only lookup, không qua retrieval
-- **unknown**: Khi không rõ intent → clarify nhẹ nhàng, giọng nữ, không ép buộc
-
-### Đặc điểm tương tác
-- **Greeting thân thiện**: Assistant gửi lời chào dễ thương khi intent rõ ràng
-- **Language-switch**: Phát hiện yêu cầu "speak English" → trả lời ngay "sure, you can speak english with me" + chuyển ngôn ngữ
-- **Clarify nhẹ nhàng**: Câu hỏi mở, cho phép trò chuyện tự nhiên, không chỉ hỏi 2 intent
-- **Social boundaries**: Xử lý yêu cầu xã giao ("hang out") một cách thân thiện nhưng có giới hạn
-
-## Luồng điều khiển (per message)
-
-1. **Greeting** (tự động khi tạo conversation): Assistant tự chào từ persona, lưu DB + embed
-2. **Nhận tin nhắn**: Lưu user message, enqueue embedding 
-3. **Language detection & switch**: Phát hiện yêu cầu English → ack ngay + chuyển ngôn ngữ
-4. **Cute greeting**: Nếu intent rõ (shopping/warranty) → gửi lời chào dễ thương "Dạ em rất vui được giúp quý khách! 💖"
-5. **Phân loại intent**: 
-   - **Early exit A**: cần clarify → stream câu hỏi mở, nhẹ nhàng → END
-   - **Early exit B**: intent=warranty → xử lý bảo hành DB-only → END
-6. **Retrieve** (chỉ shopping) → **Respond** (stream) + follow-up → END
-
-## Nodes & Implementation
-
-### Mapping chính
-- **classify** → `agent.langgraph_flow.classify_node`
-- **retrieve** → `agent.langgraph_flow.retrieve_node` 
-- **respond_stream** → `agent.langgraph_flow.stream_respond_node`
-- **clarify_stream** → `agent.langgraph_flow.clarify_stream_node` (early exit)
-- **warranty_stream** → `agent.langgraph_flow.warranty_stream_node` (early exit)
-
-### Luồng streaming trong endpoint
-```
-POST /conversations/{id}/stream:
-  ├── classify_node() 
-  ├── detect_english_request() → emit "sure, you can speak english with me"
-  ├── emit_cute_greeting() → "Dạ em rất vui được giúp! 💖" (nếu intent rõ)
-  ├── warranty_stream_node() → END (nếu warranty)
-  ├── clarify_stream_node() → END (nếu cần clarify)  
-  ├── retrieve_node() (nếu shopping)
-  ├── stream_respond_node()
-  └── append_persona_followup()
-```
-
-## Chi tiết từng Node
-
-### 1. Greeting (Auto-generated)
-- **Kích hoạt**: Khi tạo conversation mới
-- **Input**: `PERSONA_PATH` 
-- **Behavior**: Đọc `Greeting:` từ persona file → lưu DB + embed
-- **Example**: "Chào quý khách! Em là nhân viên SSTC, rất vui được hỗ trợ quý khách..."
-
-### 2. Language Detection & Switch
-- **Kích hoạt**: Phát hiện cụm từ "speak english", "tiếng anh được không", etc.
-- **Response**: Emit ngay chunk "sure, you can speak english with me" 
-- **Effect**: Set `preferred_language = "en"` cho conversation
-- **Persist**: Lưu ack message vào DB để xuất hiện trong history
-
-### 3. Cute Greeting  
-- **Kích hoạt**: Intent confident (shopping/warranty) và không cần clarify
-- **VI**: "Dạ em rất vui được giúp quý khách! 💖 Em sẽ hỗ trợ ngay ạ."
-- **EN**: "Hi! I'm happy to help 💖 I'll assist you right away."
-- **Persist**: Lưu greeting vào DB + embed
-
-### 4. Classify Node (Intent Detection)
-**Input**: Latest user message, chat history, `INTENT_CONFIDENCE_THRESHOLD`
-
-**LLM Processing**:
-```json
-{
-  "intent": "shopping|warranty|unknown",
-  "confidence": 0.0-1.0,
-  "need_retrieval": false,
-  "clarify_needed": false, 
-  "clarify_questions": ["..."],
-  "rationale": "..."
-}
-```
-
-**Keyword Fallback** (bilingual):
-- **Shopping**: mua, đặt, giá, khuyến mãi, buy, order, price, discount...
-- **Warranty**: bảo hành, serial, warranty, check warranty...
-
-**Logic**:
-- Nếu `unknown` hoặc `confidence < threshold` → `clarify_needed = true`
-- Shopping → `need_retrieval = true` (cần knowledge base)
-- Warranty → `need_retrieval = false` (DB-only lookup)
-
-**Output**: intent, confidence, clarify_needed, preferred_language
-
-## Mô tả node (chi tiết ngắn)
-
-- Node 0 — Greeting (ngoài băng)
-	- Mục đích: Thiết lập tông giọng/nhân xưng theo persona ngay khi tạo conversation.
-	- Input: conversation_id, persona (`PERSONA_PATH`). Output: 1 message assistant loại “greeting”.
-	- Tác dụng phụ: lưu DB; upsert embedding (id = message_id).
-
-- Node 1 — Nhận tin nhắn
-	- Input: HTTP request (X-API-Key), conversation_id, user message.
-	- Xử lý: đảm bảo conversation; lưu message; enqueue embedding (async, tuỳ chọn sync). Errors: 401, lỗi DB.
-
-- Node 2 — Phân loại intent
-	- Input: latest user message, history, persona, `INTENT_CONFIDENCE_THRESHOLD`.
-	- Xử lý: LLM trả JSON (intent/confidence/clarify/need_retrieval); fallback từ khóa song ngữ; tạo 1 câu clarify chuẩn hoá (VI/EN) khi cần.
-	- Xử lý: LLM trả JSON (intent/confidence/clarify/need_retrieval); fallback từ khóa song ngữ; tạo 1 câu clarify chuẩn hoá (VI/EN) khi cần. Chỉ còn hai intent hẹp: `shopping` (tư vấn/mua hàng) và `warranty` (bảo hành). Nếu không chắc, trả `unknown` và hỏi một câu làm rõ ngắn, nhẹ nhàng, giọng nữ, không ép.
-	- **Output**: intent, confidence, clarify_needed, preferred_language
-	- Early exits: (1) clarify_needed → `clarify_stream`; (2) intent=warranty + serial (hoặc đang chờ serial) → `warranty_stream`.
-
-- Clarify (early) — `clarify_stream`
-	- Mục đích: Hỏi 1 câu làm rõ rồi END lượt.
-	- Input: clarify_questions[0], preferred_language, persona. Output: assistant message loại “clarify”.
-	- Tác dụng phụ: lưu DB; upsert embedding.
-
-	Notes:
-	- The clarify question is intentionally open-ended and gentle (e.g. EN: "Hi! I'm happy to help — are you looking for shopping advice, a warranty check, or just to chat?"; VI: "Dạ em rất vui được giúp ạ — quý khách đang cần tư vấn mua hàng, kiểm tra bảo hành hay muốn trò chuyện thôi ạ?").
-	- When the user explicitly asks to speak English, the stream endpoint will first emit a short English acknowledgement ("sure, you can speak english with me") and set the conversation's preferred language to English for subsequent messages.
-
-- Warranty (early) — `warranty_stream`
-	- Mục đích: Xử lý nhanh bảo hành theo serial; không đi qua retrieve/LLM nội dung khác.
-	- Input: latest user message, trạng thái “đang chờ serial”.
-	- Xử lý: trích xuất serial (regex 3–32 [A-Za-z0-9-], có ít nhất 1 chữ số); nếu hợp lệ → tra DB `warranty_records` (DB-only); format ngày D/M/YYYY; thêm follow-up ngắn từ persona.
-	- Output: kết quả bảo hành hoặc hướng dẫn nhập serial/hotline. Side-effects: lưu DB; upsert embedding; END lượt.
-
-		Notes:
-		- Warranty lookup is DB-only: the node queries `warranty_records` in the SQL DB and does not call retrieval/LLM for the actual lookup result.
-		- After a warranty result (found or not), the node appends a short persona-driven follow-up sentence (if present) to keep the conversation friendly.
-
-- Node 3 — Retrieve
-	- Input: query (từ user), conversation_id, embed model `bge-m3`.
-	- Xử lý: truy vấn ChromaDB (`./database/chroma_db/`), lọc theo metadata; re-rank nếu bật.
-	- Output: retrieved_context (chunks).
-
-- Node 4 — Respond (stream)
-	- Input: persona (cắt theo `PERSONA_MAX_CHARS`), preferred_language, history, retrieved_context, intent.
-	- Xử lý: build prompt gọn; gọi LLM `gpt-oss`; stream chunks (SSE). Output: assistant message (final) lưu sau khi stream.
-	- Side-effects: lưu DB; enqueue embedding.
-
-- Node 5 — Hỏi tiếp/Clarify chung
-	- Mục đích: Gợi mở nhẹ (FollowUp trong persona), giúp chuyển lượt tiếp theo.
-	- Output: 1 câu follow-up ngắn (tuỳ chọn) rồi END lượt.
-
-	Guideline for social/chat requests:
-	- If a user makes a social request ("can you hangout with me", "do you want to chat"), the assistant should respond warmly and set boundaries where necessary. Example: acknowledge in the user's language, e.g. EN: "sure, you can speak english with me. I can chat and keep you company here, but I can't meet in person — how can I help?"; VI equivalent should be gentle and non-pushy.
-
-- Node 6 — END
-	- Kết thúc lượt; dọn tài nguyên tạm (nếu có).
-
-## Xử lý Social/Chat Requests
-
-### Hướng dẫn tương tác xã giao MỚI (LLM-Based)
-**Nguyên tắc chính**: Bot sử dụng LLM để detect và generate social responses tự nhiên, luôn acknowledge user's intent trước khi dẫn dắt về business.
-
-**LLM Social Detection Process**:
-1. **Input Analysis**: LLM phân tích user message để xác định social intent
-2. **Context Understanding**: Hiểu được nuance, văn hóa, và context
-3. **Response Generation**: Tạo phản hồi phù hợp với giọng nữ, xưng hô "em-quý khách"
-4. **Boundary Setting**: Đặt ranh giới hợp lý khi cần thiết
-5. **Business Redirect**: Dẫn dắt nhẹ nhàng về shopping/warranty topics
-
-**Ví dụ conversation (LLM-powered)**:
-```
-User: em khỏe không
-Bot: Em khỏe, cảm ơn quý khách đã hỏi ạ. Quý khách có cần em hỗ trợ về thông tin hàng hóa hay bảo hành không ạ?
-
-User: đi chơi không em  
-Bot: Em đang làm việc ạ, không thể đi chơi được. Quý khách có cần em hỗ trợ về thông tin hàng hóa hay bảo hành không ạ?
-
-User: có bạn trai không
-Bot: Em là AI nên không có chuyện đó ạ. Quý khách có cần em hỗ trợ về thông tin hàng hóa hay bảo hành không ạ?
-```
-
-### Ưu điểm LLM approach vs Pattern Matching:
-
-**✅ LLM Benefits**:
-- **Flexible & Adaptive**: Hiểu được các cách diễn đạt mới, không giới hạn patterns
-- **Natural Responses**: Generate phản hồi tự nhiên, phù hợp context
-- **Cultural Awareness**: Hiểu văn hóa, cách xưng hô, và social norms Việt Nam
-- **Contextual Understanding**: Hiểu được ý nghĩa thực sự, không chỉ keyword matching
-- **Consistent Persona**: Maintain giọng điệu và personality đồng nhất
-
-**❌ Pattern Matching Limitations**:
-- Cứng nhắc, chỉ detect được patterns đã định trước
-- Không hiểu context và nuance
-- Khó maintain khi cần thêm patterns mới
-- Responses không tự nhiên, có thể repetitive
-
-### Format phản hồi chuẩn (LLM-generated):
-`{LLM Social Response}. {Gentle Business Redirect}`
-
-**Business Redirect Options**:
-- **VI**: "Quý khách có cần em hỗ trợ về thông tin hàng hóa hay bảo hành không ạ?"
-- **EN**: "Can I help you with shopping or warranty questions?"
-
-## Persona & Tone
-
-### Persona File (`prompts/system_persona_vi.md`)
-**Cấu trúc**:
-```markdown
-Chatbot Persona...
-
-Greeting: [initial greeting cho conversation mới]
-FollowUp: [append sau responses để maintain conversation flow]
-```
-
-**Đặc điểm giọng điệu**:
-- **Xưng hô**: Em (AI) - Quý khách (User)  
-- **Tone**: Lịch sự, thân thiện, ngắn gọn
-- **Female voice**: Nhẹ nhàng, không ép buộc
-- **Responsive**: Song ngữ VI/EN based on user preference
-
-### Language Detection & Switch
-**Auto-detection**: Dựa trên message đầu tiên của user
-- **VI markers**: diacritics, "anh", "em", "không", "dạ", "ạ"
-- **EN markers**: "hello", "hi", "please", "how", "what"
-- **Default**: VI nếu không chắc
-
-**Switch triggers**: "speak english", "tiếng anh được không", "can we speak english"
-**Response**: Immediate ack + language change cho toàn bộ conversation
-
-## Data & Storage
-
-### AgentState Structure
-```python
-{
-  "conversation_id": str,
-  "user_id": str, 
-  "chat_history": [{"role": "user|assistant", "content": str}],
-  "metadata": {"conversation_id": str, "user_id": str},
-  "intent": "shopping|warranty|unknown",
-  "intent_confidence": float,
-  "need_retrieval_hint": bool,
-  "clarify_questions": [str],
-  "clarify_attempts": int,
-  "preferred_language": "vi|en",
-  "retrieved_context": [dict],  # từ ChromaDB
-  "response": str,              # final response
-  "stream": bool
-}
-```
-
-### Database Schema
-**Messages**: id, conversation_id, sender, text, created_at, metadata
-**Conversations**: id, user_id, created_at, metadata  
-**WarrantyRecords**: serial (PK), product_name, warranty_end_date
-
-### Vector Storage
-**ChromaDB**: `./database/chroma_db/`
-- Collection: `CHROMA_COLLECTION` env (default: `conversations_dev`)
-- Embeddings: `bge-m3` qua Ollama (1024 dimensions)
-- Mapping: `messages.id` → vector id
-- Metadata: conversation_id, user_id, message_id, created_at
-
-## Warranty Management
-
-### Data Loading (CSV → DB)
-**File format** (`knowledge/warranty.csv`):
-```csv
-serial,product_name,warranty_end_date
-ABC123,Laptop Dell,2024-12-31
-XYZ789,Mouse Logitech,30/06/2025
-```
-
-**Commands**:
-```bash
-# Validate only
-uv run scripts/upsert_warranty_csv.py --file knowledge/warranty.csv --dry-run
-
-# Write to DB  
-uv run scripts/upsert_warranty_csv.py --file knowledge/warranty.csv
-```
-
-**Date formats**: YYYY-MM-DD hoặc DD/MM/YYYY
-
-### Serial Validation Rules
-- **Length**: 3-32 characters
-- **Characters**: A-Z, a-z, 0-9, dấu gạch nối (-)
-- **Required**: Ít nhất 1 chữ số
-- **Forbidden**: Khoảng trắng internal
-- **Regex**: `(?<![A-Za-z0-9-])(?=[A-Za-z0-9-]*\d[A-Za-z0-9-]*)([A-Za-z0-9-]{3,32})(?![A-Za-z0-9-])`
-
-## API (rút gọn)
-- POST /conversations → tạo conversation, auto greeting (201)
-- POST /conversations/{id}/messages → lưu message (202), assistant flow chạy nền
-- POST /conversations/{id}/stream → stream câu trả lời (SSE)
-- GET  /conversations/{id}/history → trả lịch sử
-
-## Cấu hình (env chính)
-- OLLAMA_HOST/PORT, CHROMA_PATH, CHROMA_COLLECTION, DATABASE_URL, X_API_KEYS
-- PERSONA_PATH, PERSONA_MAX_CHARS
-- INTENT_CONFIDENCE_THRESHOLD
-
-## Phần mềm hoá (ngắn)
-- Persona ngoài code (`prompts/system_persona_vi.md`): lấy Greeting/FollowUp; giới hạn bởi `PERSONA_MAX_CHARS` khi dựng prompt.
-- Clarify loop: không đặt trần; câu hỏi chuẩn hoá để đếm attempts ổn định.
-
-## Ghi chú triển khai & lý do (4–8)
-
-4) Streaming: endpoint vs. thuần graph
-- Thực tế: endpoint tự điều phối classify → (clarify|warranty) early exits → retrieve → respond_stream để đẩy chunk SSE ngay.
-- Lý do: kiểm soát streaming mịn và đơn giản hoá I/O SSE. Có thể chuyển sang conditional edges trong graph nếu cần thuần nhất, nhưng hiện tại không bắt buộc.
-
-5) Khung SSE mở đầu
-- Thực tế: emit `data: {"debug":"stream-open"}` ngay đầu stream.
-- Lý do: giúp client sớm nhận biết kết nối mở, cải thiện UX và đo latency đầu tiên. Không ảnh hưởng nội dung.
-
-6) Prompt ghi chú intent
-- Thực tế: prompt có dòng "Detected intent: <intent>" (nếu đã xác định).
-- Lý do: giúp model giữ ngữ cảnh mục tiêu (tư vấn lắp ráp/mua hàng/bảo hành) → trả lời tập trung. Nếu muốn trung lập, có thể bỏ.
-
-7) Tên collection Chroma
-- Thực tế: dùng biến môi trường `CHROMA_COLLECTION` (mặc định: `conversations_dev`).
-- Lý do: linh hoạt dev/prod; script index vẫn có thể override bằng tham số `--collection`.
-
-8) FollowUp từ persona
-- Thực tế: follow-up đã áp dụng ở nhánh bảo hành; đồng thời bổ sung append follow-up ngắn sau trả lời thường (respond_stream) để giữ nhịp hội thoại.
-- Lý do: tăng tỉ lệ tiếp tục hội thoại; thống nhất tông giọng từ persona.
-
-Khác biệt nhỏ so với mô tả cũ
-- “Đang chờ serial” hiện nhận diện qua metadata trên message assistant (`type = warranty_prompt`|`warranty_prompt_invalid`) khi có, hoặc fallback kiểm tra câu chữ. Lý do: bền vững hơn so với so khớp chuỗi thuần.
+-   **`greeting_node`**: Node bắt đầu, chủ động tạo và gửi lời chào.
+-   **`router`**: Một node định tuyến đơn giản, quyết định xem người dùng muốn kết thúc hay cần xử lý nghiệp vụ.
+-   **`agent_loop`**: Đây là một vòng lặp con chứa logic Agent-Tool mạnh mẽ để xử lý các yêu cầu phức tạp.
+-   **`farewell_node`**: Node kết thúc, tạo và gửi lời chào tạm biệt.
+
+
+
+## 4.2. Quản lý và sử dụng toàn bộ context hội thoại
+
+-   **Mục tiêu:** Đảm bảo agent luôn nắm bắt, duy trì và tận dụng toàn bộ context (lịch sử hội thoại, thông tin khách hàng, trạng thái tác vụ, ngôn ngữ, v.v.) để giữ cuộc trò chuyện chu đáo, liền mạch và cá nhân hóa.
+-   **Nguyên tắc:**
+    1.  Agent luôn truy xuất và cập nhật toàn bộ lịch sử hội thoại, trạng thái session, thông tin khách hàng, trạng thái ngôn ngữ, các tác vụ đang xử lý.
+    2.  Khi trả lời, agent phải cân nhắc toàn bộ context này để đảm bảo trả lời nhất quán, không bỏ sót thông tin, không hỏi lại những gì khách đã cung cấp.
+    3.  Nếu khách đổi chủ đề, agent vẫn giữ được mạch hội thoại, có thể quay lại chủ đề cũ khi cần.
+    4.  Agent chủ động nhắc lại các thông tin quan trọng (sản phẩm, vấn đề, ưu đãi, trạng thái bảo hành, v.v.) khi phù hợp để thể hiện sự quan tâm và chuyên nghiệp.
+    5.  Nếu context quá dài, agent có thể tóm tắt lại các thông tin chính để truyền vào prompt LLM, đảm bảo hiệu quả và tiết kiệm token.
+-   **Gợi ý kỹ thuật:**
+    - Lưu context vào state/session (bao gồm lịch sử message, metadata, trạng thái ngôn ngữ, thông tin khách hàng, các tác vụ đang xử lý).
+    - Khi tạo prompt cho LLM, truyền toàn bộ hoặc tóm tắt context vào để LLM trả lời sát thực tế.
+    - Có thể sử dụng các kỹ thuật tóm tắt hội thoại (conversation summarization) nếu lịch sử quá dài.
+
+
+-   **Tính năng:** Hệ thống tự động nhận diện ngôn ngữ của người dùng (tiếng Việt, tiếng Anh, v.v.) dựa trên nội dung tin nhắn đầu vào, và phản hồi bằng đúng ngôn ngữ đó.
+-   **Chuyển đổi động:** Nếu trong quá trình trao đổi, người dùng yêu cầu đổi ngôn ngữ (ví dụ: "nói tiếng Anh đi", "speak English please", "nói tiếng Việt đi"), hệ thống sẽ chuyển sang ngôn ngữ được yêu cầu cho toàn bộ các phản hồi tiếp theo.
+-   **Cách triển khai:**
+    1.  **Nhận diện ngôn ngữ:** Sử dụng mô hình LLM hoặc thư viện nhận diện ngôn ngữ (langdetect, fasttext, v.v.) để xác định ngôn ngữ của từng tin nhắn user gửi lên.
+    2.  **Lưu trạng thái ngôn ngữ:** Mỗi session/conversation lưu trạng thái ngôn ngữ hiện tại (ví dụ: "vi", "en").
+    3.  **Cập nhật trạng thái:** Nếu phát hiện user yêu cầu đổi ngôn ngữ (qua intent hoặc từ khóa), cập nhật trạng thái ngôn ngữ cho session.
+    4.  **Sinh phản hồi:** Khi tạo prompt cho LLM, luôn truyền kèm ngôn ngữ mục tiêu để LLM trả lời đúng ngôn ngữ.
+    5.  **Ví dụ logic:**
+        - User nhắn: "Can you help me?" → Nhận diện tiếng Anh → Trả lời bằng tiếng Anh.
+        - User nhắn: "Nói tiếng Anh đi" → Cập nhật trạng thái ngôn ngữ sang "en" → Các câu trả lời sau đều bằng tiếng Anh.
+        - User nhắn: "Nói tiếng Việt đi" → Cập nhật trạng thái ngôn ngữ sang "vi" → Các câu trả lời sau đều bằng tiếng Việt.
+    6.  **Gợi ý prompt cho LLM:**
+        - "Hãy trả lời bằng [ngôn ngữ] đúng với yêu cầu của khách hàng. Nếu khách yêu cầu đổi ngôn ngữ, hãy chuyển đổi ngay từ câu trả lời tiếp theo."
+
+---
+## 4. Đặc tả Thành phần và Luồng xử lý
+
+### a. Giai đoạn 1: Chào hỏi Chủ động
+
+-   **Kích hoạt:** Ngay khi phiên trò chuyện bắt đầu.
+-   **Node thực thi:** `greeting_node`.
+-   **Logic:**
+    1.  Gọi mô hình sinh câu chào qua Ollama, sử dụng biến môi trường `${SMALL_GENERATE_MODEL}` (ví dụ: `phi4-mini`).
+    2.  Sử dụng một prompt được thiết kế để tạo ra các câu chào đa dạng, sáng tạo, và chuyên nghiệp theo văn phong của SSTC.
+    3.  Gửi câu chào đã tạo cho người dùng.
+    4.  Cập nhật `State` với tin nhắn của assistant.
+    5.  Chuyển sang trạng thái chờ phản hồi từ người dùng.
+
+### b. Giai đoạn 2: Phân loại Intent Ban đầu
+
+-   **Kích hoạt:** Sau khi người dùng gửi tin nhắn đầu tiên hoặc các tin nhắn tiếp theo sau khi một tác vụ đã hoàn thành.
+-   **Node thực thi:** `router`.
+-   **Logic:**
+    1.  **Thu thập ngữ cảnh:** Lấy tin nhắn hiện tại của người dùng và **một tin nhắn ngay trước đó** từ `State`.
+    2.  Gọi mô hình phân loại intent qua Ollama, sử dụng biến môi trường `${SMALL_REASONING_MODEL}` (ví dụ: `phi4-mini-reasoning`).
+    3.  Sử dụng một prompt yêu cầu mô hình phân loại intent dựa trên ngữ cảnh đã thu thập. Các intent có thể là:
+        -   `END`: Nếu người dùng có ý định kết thúc (ví dụ: "cảm ơn", "tạm biệt").
+        -   `AGENT_WORK`: Đối với tất cả các trường hợp còn lại (hỏi về sản phẩm, bảo hành, trò chuyện thông thường).
+    4.  Dựa trên kết quả, cạnh điều kiện sẽ chuyển luồng đến `farewell_node` hoặc `agent_loop`.
+
+### c. Giai đoạn 3: Vòng lặp Agent-Tool (Xử lý Nghiệp vụ)
+
+-   **Kích hoạt:** Khi `router` xác định intent là `AGENT_WORK`.
+-   **Vòng lặp:** `agent_loop`.
+-   **Logic Cốt lõi:**
+    1.  **Agent Suy luận:**
+        -   Node `agent` (bên trong vòng lặp) sẽ nhận toàn bộ lịch sử trò chuyện.
+        -   Khi cần sinh câu trả lời tổng hợp, agent sẽ gọi mô hình sinh qua Ollama, sử dụng biến môi trường `${GENERATE_MODEL}` (ví dụ: `gpt-oss`).
+        -   Khi cần suy luận logic hoặc phân tích sâu, agent sẽ gọi mô hình reasoning qua Ollama, sử dụng biến môi trường `${REASONING_MODEL}` (ví dụ: `gpt-oss`).
+        -   Nó sẽ quyết định gọi một hoặc nhiều công cụ nếu cần thông tin để trả lời.
+    2.  **Thực thi Công cụ:**
+        -   Node `action` sẽ thực thi các công cụ được yêu cầu và trả kết quả về.
+    3.  **Xử lý Trò chuyện Phiếm và Dẫn dắt Nâng cao:**
+        -   Khi Agent xác định người dùng đang trò chuyện phiếm (không có công cụ nào phù hợp để gọi), Agent sẽ không gọi công cụ mà trực tiếp tạo ra một câu trả lời hội thoại.
+        -   Agent sẽ thực hiện các bước sau:
+            1. **Phân tích cảm xúc (Sentiment Analysis):** Xác định sắc thái cảm xúc trong câu nói của người dùng (tích cực, tiêu cực, trung tính) để đưa ra phản hồi đồng cảm, phù hợp.
+            2. **Ghi nhớ ngữ cảnh (Contextual Memory):** Sử dụng thông tin từ các cuộc trò chuyện trước đó (nếu có) để cá nhân hóa lời dẫn dắt, ví dụ nhắc lại sản phẩm hoặc chủ đề mà khách từng quan tâm.
+            3. **Đa dạng hóa chiến lược dẫn dắt:** Agent sẽ chọn một trong nhiều kỹ thuật dẫn dắt để tránh lặp lại:
+                - Hỏi trực tiếp về thiết bị, nhu cầu, vấn đề liên quan.
+                - Chia sẻ một mẹo nhỏ hoặc thông tin hữu ích liên quan đến công nghệ.
+                - Đưa ra nhận định chung và câu hỏi mở về trải nghiệm công nghệ.
+        -   **Quy tắc:**
+            - Luôn phản hồi trực tiếp, thể hiện sự đồng cảm hoặc bình luận về câu nói của khách trước khi dẫn dắt.
+            - Dẫn dắt phải tự nhiên, không gượng ép, ưu tiên liên hệ đến hai chủ đề chính: tư vấn mua hàng hoặc kiểm tra bảo hành.
+        -   **Ví dụ minh họa:**
+            *User: "Hôm nay trời đẹp quá"*
+            > "Đúng rồi ạ! Thời tiết đẹp thế này làm việc cũng hiệu quả hơn đúng không quý khách? Em tò mò quý khách đang làm việc trên laptop hay PC vậy ạ? Có khi nào gặp khó khăn gì về thiết bị không ạ?"
+
+            *User: "Mình đang stress vì deadline"*
+            > "Em hiểu cảm giác đó ạ! Deadline nhiều khi thật sức ép. Hy vọng máy tính của quý khách ít nhất cũng chạy mượt mà để hỗ trợ công việc tốt nhất. Quý khách có gặp tình trạng máy chậm hay gì không ạ?"
+
+            *User: "Chán quá, công việc dạo này nhiều vấn đề."*
+            > "Em rất hiểu cảm giác của quý khách ạ. Đôi khi công việc có những lúc thật áp lực. Mong rằng ít nhất thì chiếc máy tính của quý khách vẫn đang hoạt động tốt để không làm mình thêm phiền lòng. Quý khách có cần em kiểm tra giúp gì về thiết bị không ạ?"
+
+            *User: "Hôm trước mình hỏi về mainboard B760M ấy nhỉ"*
+            > "Dạ đúng rồi ạ! Em vẫn nhớ quý khách từng quan tâm đến mainboard B760M. Không biết quý khách đã quyết định chọn mẫu đó chưa hay cần em tư vấn thêm gì không ạ?"
+
+            *User: "Deadline nhiều quá, máy cứ lag mãi"*
+            > "Deadline nhiều mà máy lại lag thì thật là khó chịu ạ. Em có một mẹo nhỏ giúp tối ưu tốc độ máy tính khi làm việc nặng, quý khách có muốn nghe không ạ? Hoặc nếu cần, em có thể tư vấn các dòng SSD mới giúp tăng tốc máy rất hiệu quả."
+    4.  **Kết thúc Vòng lặp:** Vòng lặp sẽ tiếp tục cho đến khi Agent quyết định nó đã có đủ thông tin và tạo ra câu trả lời cuối cùng. Sau đó, luồng sẽ quay lại trạng thái chờ tin nhắn tiếp theo từ người dùng.
+
+### d. Giai đoạn 4: Kết thúc Cuộc trò chuyện
+
+-   **Kích hoạt:** Khi `router` xác định intent là `END`.
+-   **Node thực thi:** `farewell_node`.
+-   **Logic:**
+    1.  Gọi mô hình sinh câu tạm biệt qua Ollama, sử dụng biến môi trường `${SMALL_GENERATE_MODEL}` (ví dụ: `phi4-mini`).
+    2.  Sử dụng một prompt được thiết kế để tạo ra các câu chào tạm biệt sáng tạo, phù hợp với ngữ cảnh cuộc trò chuyện vừa kết thúc.
+    3.  Gửi lời chào tạm biệt cho người dùng và kết thúc phiên.
+
+## 5. Hệ thống Agent-Tool và Quản lý Tri thức
+
+### a. Danh sách Công cụ (Tools)
+
+| Tên Công cụ | Mục đích | Dữ liệu đầu vào (Input) | Dữ liệu đầu ra (Output) |
+| :--- | :--- | :--- | :--- |
+| `tra_cuu_thong_tin_bao_hanh` | Tra cứu thông tin bảo hành cho một sản phẩm. | Một chuỗi (string) chứa số serial. | Một đối tượng (object/JSON) chứa thông tin chi tiết về bảo hành. |
+| `tim_kiem_san_pham` | Tìm kiếm các sản phẩm dựa trên mô tả của người dùng. | Một chuỗi (string) chứa truy vấn tìm kiếm. | Một danh sách (list) các đối tượng sản phẩm, mỗi đối tượng chứa ID, tên, và giá. |
+| `lay_chi_tiet_san_pham` | Lấy thông tin kỹ thuật và tồn kho của một sản phẩm. | Một chuỗi (string) chứa ID của sản phẩm. | Một đối tượng (object/JSON) chứa thông số kỹ thuật và số lượng tồn kho. |
+| `kiem_tra_tinh_tuong_thich` | Kiểm tra xem hai linh kiện có tương thích với nhau không. | Hai chuỗi (string) chứa ID của hai sản phẩm. | Một đối tượng (object/JSON) chứa trạng thái tương thích (true/false) và giải thích. |
+| `tim_kiem_trong_co_so_tri_thuc` | Tìm câu trả lời cho các câu hỏi chung trong tài liệu. | Một chuỗi (string) chứa câu hỏi của người dùng. | Một chuỗi (string) chứa đoạn văn bản có liên quan nhất được tìm thấy. |
+
+### b. Quản lý tri thức và RAG (Retrieval-Augmented Generation)
+
+#### Phân loại dữ liệu:
+-   **Knowledge base (dạng tài liệu, dùng cho RAG):**
+    -   Chính sách bảo hành (nhiều trường hợp, quy tắc, ngoại lệ, quy trình)
+    -   Giới thiệu về công ty, thương hiệu, quy trình dịch vụ
+    -   UPS (Unique Selling Points) của sản phẩm: điểm mạnh, lợi ích, FAQ, so sánh
+    -   (Có thể bổ sung: quy trình đổi trả, hướng dẫn gửi bảo hành, các hướng dẫn sử dụng)
+-   **Database (dữ liệu có cấu trúc, truy vấn trực tiếp):**
+    -   Danh sách sản phẩm, thông số kỹ thuật, tồn kho, giá
+    -   Thông tin bảo hành từng serial, lịch sử bảo hành, trạng thái từng sản phẩm
+    -   (Có thể bổ sung: mapping sản phẩm với chính sách đặc biệt nếu có)
+
+#### Cách AI sử dụng RAG:
+-   Khi user hỏi về chính sách, quy trình, điểm mạnh sản phẩm, AI sẽ truy xuất (retrieve) các đoạn văn bản liên quan từ knowledge base đã được index (RAG).
+-   Khi user hỏi về thông tin sản phẩm cụ thể, tồn kho, bảo hành serial, AI sẽ truy vấn trực tiếp vào database.
+-   Agent sẽ tự động kết hợp thông tin từ cả hai nguồn để tạo ra câu trả lời đầy đủ, chính xác và có thể trích dẫn nguồn nếu cần.
+
+#### Ví dụ luồng xử lý RAG:
+1.  **User:** "Chính sách bảo hành của SSTC cho SSD là gì?"
+2.  **Agent:**
+    -   Nhận diện đây là câu hỏi về chính sách → gọi công cụ RAG để truy xuất đoạn văn bản liên quan trong knowledge base.
+    -   Tổng hợp, diễn giải lại bằng ngôn ngữ tự nhiên, có thể trích dẫn hoặc tóm tắt.
+    -   Nếu cần, hỏi thêm user về sản phẩm cụ thể để truy vấn database lấy thông tin chi tiết.
+
+3.  **User:** "SSD MAX-IV 1TB còn hàng không?"
+4.  **Agent:**
+    -   Nhận diện đây là câu hỏi về tồn kho sản phẩm → truy vấn trực tiếp database.
+    -   Nếu user hỏi thêm về điểm mạnh sản phẩm, Agent sẽ kết hợp truy xuất RAG (UPS) và database (specs, tồn kho).
+
+### c. Quản lý và tích hợp chương trình Marketing/Khuyến mãi
+
+-   **Knowledge base (RAG):**
+    -   Lưu trữ các tài liệu mô tả tổng quan về các chương trình marketing, ưu đãi, sự kiện, thể lệ tham gia, câu hỏi thường gặp về khuyến mãi, các case study thành công, hướng dẫn sử dụng mã giảm giá, v.v.
+    -   Dùng để AI có thể giải thích chi tiết, trả lời các câu hỏi về quy định, điều kiện, cách thức nhận ưu đãi, hoặc các thông tin tổng quan về các chiến dịch marketing.
+
+-   **Database (dữ liệu có cấu trúc):**
+    -   Lưu các chương trình khuyến mãi đang diễn ra, mã giảm giá, điều kiện áp dụng, thời gian hiệu lực, sản phẩm áp dụng, số lượng còn lại, lịch sử sử dụng mã của từng user (nếu có cá nhân hóa).
+    -   Dùng để AI kiểm tra, xác nhận cho user về các ưu đãi hiện hành, tư vấn mã giảm giá phù hợp, hoặc thông báo các chương trình sắp hết hạn/còn lại ít suất.
+
+-   **Cách AI sử dụng:**
+    -   Khi user hỏi về chương trình khuyến mãi, AI sẽ truy xuất thông tin tổng quan từ knowledge base (RAG) để giải thích quy định, thể lệ, hướng dẫn sử dụng.
+    -   Nếu user hỏi về ưu đãi cụ thể, mã giảm giá, hoặc muốn kiểm tra quyền lợi cá nhân, AI sẽ truy vấn trực tiếp database để trả lời chính xác về điều kiện, trạng thái, hoặc gợi ý mã phù hợp.
+    -   AI có thể chủ động đề xuất ưu đãi khi nhận thấy user có nhu cầu mua hàng, hoặc nhắc nhở về các chương trình sắp kết thúc.
+
+#### Ví dụ luồng xử lý Marketing:
+1.  **User:** "Có chương trình khuyến mãi nào cho SSD không?"
+2.  **Agent:**
+    -   Truy vấn database để kiểm tra các ưu đãi hiện hành cho sản phẩm SSD.
+    -   Nếu có, trả lời chi tiết về mức giảm giá, điều kiện, thời gian áp dụng.
+    -   Nếu user hỏi thêm về thể lệ, AI sẽ truy xuất RAG để giải thích quy định, hướng dẫn sử dụng mã.
+
+3.  **User:** "Mã giảm giá này dùng thế nào?"
+4.  **Agent:**
+    -   Truy xuất knowledge base để giải thích cách sử dụng mã, điều kiện áp dụng, các lưu ý quan trọng.
+
+#### Đề xuất bổ sung:
+-   Nếu có các chiến dịch marketing cá nhân hóa (ví dụ: ưu đãi sinh nhật, ưu đãi cho khách hàng thân thiết), nên lưu lịch sử sử dụng mã và trạng thái ưu đãi của từng user trong database để AI có thể tư vấn sát thực tế nhất.

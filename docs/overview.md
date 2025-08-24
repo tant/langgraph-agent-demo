@@ -1,70 +1,40 @@
 # Tổng quan dự án
 
-Mục tiêu: xây dựng một ứng dụng chat đa người dùng (multi-user chat) dùng LangGraph và Ollama để xử lý ngôn ngữ tự nhiên, có lưu lịch sử hội thoại và hỗ trợ retrieval-augmented responses.
+Mục tiêu: xây dựng một ứng dụng chat đa người dùng (multi-user chat) sử dụng LangGraph và Ollama, với các tính năng nâng cao trong Phase 2 để cải thiện trải nghiệm người dùng và khả năng của chatbot.
 
-Tính năng chính:
-- Hỗ trợ nhiều user đồng thời.
-- Lưu lịch sử hội thoại theo conversation/session.
-- Tạo embedding cho đoạn hội thoại và index vào ChromaDB (vector store local) để truy hồi.
-- Sử dụng Ollama với model `gpt-oss` cho generation và `bge-m3` (1024-d) cho embeddings.
-- Chiến lược retrieval (tóm tắt): ưu tiên lấy context từ same-conversation (chat history); nếu coverage/confidence không đủ, mở rộng truy vấn sang knowledge base (ChromaDB) dùng embeddings `bge-m3` và áp dụng vector search + re-rank (vector score + heuristics + optional lexical/BM25).
-- Backend FastAPI tách biệt; Gradio làm frontend gọi REST API.
+## Các tính năng chính (Phase 2)
 
-Giả định ban đầu:
-- Phát triển bằng Python (3.10+).
-- Dùng `uv` để chạy server (bạn đã cài sẵn).
-- Ollama đã được cài và model tương ứng đã được tải trên host.
+- **Kiến trúc Agent-Tool lai**: Sử dụng LangGraph để điều phối một luồng hội thoại có cấu trúc (chào hỏi, tạm biệt) kết hợp với một vòng lặp Agent-Tool linh hoạt để xử lý các tác vụ phức tạp.
+- **Giao diện Streaming**: Giao diện người dùng (Gradio) kết nối với backend (FastAPI) qua cơ chế streaming, giúp hiển thị phản hồi của chatbot ngay lập tức, tạo cảm giác tương tác tự nhiên và mượt mà.
+- **Vòng lặp Phản hồi (Feedback Loop)**: Người dùng có thể đánh giá câu trả lời của chatbot (👍/👎). Dữ liệu này được thu thập để phân tích và fine-tuning mô hình trong tương lai, giúp hệ thống liên tục tự cải thiện.
+- **Hỗ trợ đa ngôn ngữ**: Tự động nhận diện và phản hồi bằng ngôn ngữ của người dùng (tiếng Việt/tiếng Anh), đồng thời cho phép chuyển đổi ngôn ngữ giữa cuộc trò chuyện.
+- **Quản lý tri thức nâng cao**: Phân tách rõ ràng giữa tri thức có cấu trúc (DB cho sản phẩm, bảo hành) và tri thức phi cấu trúc (RAG cho chính sách, FAQ), cho phép Agent truy xuất thông tin hiệu quả.
+- **Xử lý hội thoại tự nhiên**: Cải thiện khả năng xử lý các cuộc trò chuyện phiếm và dẫn dắt người dùng quay lại chủ đề chính một cách tự nhiên.
 
-Xem các phần chi tiết khác để biết kiến trúc, mô hình dữ liệu, chiến lược retrieval, vận hành và bảo mật.
+## Kiến trúc
 
-## UI (Frontend)
-
-- UI dự kiến dùng: Gradio — một framework Python đơn giản để nhanh chóng tạo giao diện chat/web UI cho mô hình.
-- Mục đích: cung cấp giao diện web nhẹ để user gửi message, xem phản hồi, và quản lý session (tạo, xóa, export).
-- Tích hợp:
-  - Gradio hoạt động như thin client: gọi REST API của backend FastAPI (khuyến nghị cho cả dev/prod để nhất quán mô hình triển khai).
-
-## Lợi ích
-- Triển khai nhanh giao diện thử nghiệm.
-- Hỗ trợ interactivity (buttons, file upload) và dễ kết nối với backend qua REST để demo nhanh.
-
-## Lưu ý
-- Gradio mặc định không phải là load-balanced production-ready frontend khi có hàng trăm kết nối; cần đặt phía trước bằng một reverse proxy hoặc tách frontend/back-end để scale.
+- **Backend**: FastAPI, phục vụ API và logic chính.
+- **Frontend**: Gradio, hoạt động như một client mỏng (thin client) gọi API streaming.
+- **Orchestrator**: LangGraph.
+- **Models**: Ollama (`gpt-oss`, `bge-m3`, `phi-3`, etc.).
+- **Lưu trữ**: SQLite/Postgres và ChromaDB.
 
 ## Quick start
-- Run backend (FastAPI):
 
-```bash
-uv run uvicorn agent.main:app --reload --host 0.0.0.0 --port 8000
-```
+1.  **Chạy Backend (FastAPI):**
 
-- Run UI (Gradio client):
+    ```bash
+    uv run uvicorn agent.main:app --reload --host 0.0.0.0 --port 8000
+    ```
 
-```bash
-uv run --with gradio ui/gradio_app.py
-```
+2.  **Chạy UI (Gradio client) trong một terminal khác:**
 
-## Env vars (minimum)
-- OLLAMA_HOST (default: localhost)
-- OLLAMA_PORT (default: 11434)
-- CHROMA_PATH (default: ./database/chroma_db)
-- DATABASE_URL (e.g., sqlite:///./database/sqlite.db or Postgres URL)
-- REDIS_URL (optional, for cache/queue)
-  - Note: Redis is optional in development; enable Redis in production for cache, locks, and rate-limiting.
+    ```bash
+    uv run --with gradio ui/gradio_app.py
+    ```
 
-## Quick API example
-Send a message (replace values):
-
-```bash
-curl -X POST "http://localhost:8000/conversations/<conversation_id>/messages" \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: your-token" \
-  -d '{"content":"Hello"}'
-```
-
-## See also
-- `docs/architecture.md` — Kiến trúc ngắn gọn
-- `docs/langgraph_flow.md` — Luồng LangGraph & AgentState
-- `docs/run_local.md` — Hướng dẫn chạy cục bộ chi tiết
-- `docs/data_model.md` — Mô hình dữ liệu & mapping tới ChromaDB
-- `docs/retrieval.md` — Chiến lược retrieval
+## Xem thêm
+- `docs/architecture.md` — Chi tiết về kiến trúc hệ thống.
+- `docs/langgraph_flow.md` — Mô tả chi tiết luồng xử lý của LangGraph và Agent.
+- `docs/run_local.md` — Hướng dẫn đầy đủ để chạy dự án trên máy cục bộ.
+- `docs/data_model.md` — Sơ đồ và mô tả các bảng dữ liệu.

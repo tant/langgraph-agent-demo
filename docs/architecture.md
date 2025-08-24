@@ -2,55 +2,67 @@
 
 Mục tiêu: mô tả súc tích các thành phần chính, luồng dữ liệu và các quyết định triển khai.
 
-## Quick run (1-liner)
-- Run backend: `uv run uvicorn agent.main:app --reload --host 0.0.0.0 --port 8000` (run uvicorn via uv)
-
 ## Thành phần chính
-- Backend: FastAPI (async) — tách biệt, chịu trách nhiệm auth, session, LangGraph orchestration, gọi Ollama và ChromaDB.
-- UI: Gradio (thin client) — chạy riêng, gọi REST API của backend (khuyến nghị cho prod).
-- Orchestrator: LangGraph xử lý flow/prompt building.
-- Vector store: ChromaDB (local) — path `./database/chroma_db/`.
-- Embeddings: Ollama `bge-m3` (1024-d); Generation: Ollama `gpt-oss`.
-- Persistence: Postgres (prod) / SQLite (dev) cho users, conversations, messages metadata.
-- Workers: background queue (Celery/RQ/async tasks) cho embedding/upsert và công việc nặng.
-- Cache: Redis (optional) cho cache, locks, rate limiting.
-	- Note: Redis is optional for local development; in production enable Redis for cache, locks, and rate-limiting.
+- **Backend**: FastAPI (async) — tách biệt, chịu trách nhiệm auth, session, LangGraph orchestration, gọi Ollama và ChromaDB. Cung cấp API cho UI, bao gồm cả endpoint streaming.
+- **UI**: Gradio (thin client) — chạy riêng, kết nối tới backend qua HTTP streaming để hiển thị tin nhắn theo thời gian thực.
+- **Orchestrator**: LangGraph xử lý flow/prompt building theo kiến trúc lai (Hybrid Graph & Agent-Tool) được mô tả trong `langgraph_flow.md`.
+- **Vector store**: ChromaDB (local) — path `./database/chroma_db/`.
+- **Models (qua Ollama)**: 
+    - Embeddings: `bge-m3` (1024-d)
+    - Generation: `gpt-oss` (hoặc các model khác như `phi-3` cho các tác vụ nhỏ hơn).
+- **Persistence**: Postgres (prod) / SQLite (dev) cho users, conversations, messages, và feedback_logs.
+- **Workers**: background queue (Celery/RQ/async tasks) cho embedding/upsert và các tác vụ nặng như phân tích phản hồi.
+- **Cache**: Redis (optional) cho cache, locks, rate limiting.
 
-## Luồng xử lý (rút gọn)
-1. Client gửi message -> Backend (POST /conversations/{id}/messages).
-2. Backend: xác thực token (`X-API-Key`), lưu message, trả ACK (202).
-3. Backend enqueue embedding job -> worker gọi Ollama `bge-m3` -> upsert vào Chroma.
-4. Trả lời: retriever -> LangGraph prompt -> Ollama `gpt-oss` -> lưu và trả response.
+## Luồng xử lý chính (Phase 2)
 
-## UI (ngắn)
-- Khuyến nghị: Gradio làm frontend độc lập (thin client) gọi REST API; trong dev có thể chạy local để demo nhanh.
+1.  **Client (Gradio)** kết nối tới **Backend (FastAPI)** qua endpoint streaming.
+2.  Backend điều phối luồng hội thoại qua **LangGraph** theo các giai đoạn: Chào hỏi, Phân loại Intent, Vòng lặp Agent-Tool, Tạm biệt.
+3.  **Agent-Tool** trong LangGraph sử dụng các công cụ để tra cứu DB (sản phẩm, bảo hành) hoặc RAG (kiến thức chung) từ **ChromaDB**.
+4.  Các mô hình ngôn ngữ từ **Ollama** được sử dụng cho việc sinh văn bản, phân loại, và suy luận.
+5.  Phản hồi từ người dùng (👍/👎) được ghi vào bảng `feedback_logs` để phân tích và cải thiện mô hình sau này.
 
-## Vector store (ChromaDB)
-- Local path: `./database/chroma_db/`.
-- Mapping: `messages.id` ↔ chroma vector id; embedding dim = 1024.
-- Upsert: batch, idempotent (key = `{message_id}#chunk_{i}`).
-- Delete: xóa vector khi message/conversation bị xóa.
+## Kiến trúc UI Streaming
 
-## Authentication & Env vars (tối thiểu)
-- Auth: opaque token via header `X-API-Key` (simple token -> user_id lookup).
-- Env (min): `OLLAMA_HOST` (default: localhost), `OLLAMA_PORT` (11434), `CHROMA_PATH` (./database/chroma_db), `DATABASE_URL`, `REDIS_URL` (optional).
+- **Backend (FastAPI)** cung cấp một endpoint (`/chat/stream`) trả về `StreamingResponse`.
+- **Frontend (Gradio)** gửi yêu cầu đến endpoint này và nhận các chunk dữ liệu (text hoặc JSON) theo thời gian thực, sau đó cập nhật giao diện chat ngay lập tức.
+- Kiến trúc này mang lại trải nghiệm người dùng mượt mà, giảm thời gian chờ đợi.
 
-	- Note: `REDIS_URL` may be left unset in development. The system supports a no-Redis mode with in-process fallbacks for caching/locks; enable Redis in production for distributed correctness.
+## Kiến trúc Vòng lặp Phản hồi (Feedback Loop)
 
-## Observability & retry
-- Gắn `request_id` và `conversation_id` lên logs/traces; use structured JSON logs.
-- Jobs (embedding/upsert) có retry/backoff; nếu fail, mark `message.metadata['embed_failed']=true` để hỗ trợ retry manual.
+```mermaid
+graph TD
+    subgraph "Người dùng & Chatbot"
+        A[Người dùng gửi tin nhắn] --> B{Chatbot xử lý & trả lời};
+        B --> C[Hiển thị câu trả lời + nút 👍/👎];
+        C --> D[Người dùng tương tác];
+    end
 
-## Backup & restore
-- Snapshot `./database/chroma_db/` and DB metadata regularly (daily/weekly as needed); test restore.
+    subgraph "Hệ thống Backend"
+        D -- Phản hồi trực tiếp --> E[Lưu vào DB Phản hồi];
+        D -- Phản hồi gián tiếp --> F[Phân tích Hành vi];
+        F --> E;
+    end
 
-## Scale & ops (tóm tắt)
-- Scale backend and workers horizontally; use load balancer + shared Redis/Postgres.
-- Monitor: request latency, embedding time, vector query time, queue length.
+    subgraph "Quy trình Cải thiện (Offline)"
+        E --> G[Tổng hợp & Gán nhãn Dữ liệu];
+        G --> H[Dashboard Review cho Quản trị viên];
+        H --> I{Dữ liệu đã được làm sạch};
+        I --> J[Fine-tuning lại các mô hình AI];
+        J --> K[Triển khai mô hình mới];
+    end
 
-## Quyết định đã chốt
-- Vector store: ChromaDB (local)
-- Embedding: bge-m3 (1024-d)
-- Generation: gpt-oss (Ollama)
-- Backend/API: FastAPI (tách Gradio)
-- Auth: simple token via `X-API-Key`
+    K -.-> B;
+
+    style H fill:#f9f,stroke:#333,stroke-width:2px
+    style J fill:#ccf,stroke:#333,stroke-width:2px
+```
+
+## Quyết định đã chốt (Phase 2)
+- **Vector store**: ChromaDB (local)
+- **Embedding**: bge-m3 (1024-d)
+- **Generation/Reasoning**: Các model phù hợp từ Ollama (e.g., gpt-oss, phi-3)
+- **Backend/API**: FastAPI (tách biệt với Gradio)
+- **Frontend**: Gradio (streaming client)
+- **Orchestration**: LangGraph với kiến trúc Agent-Tool
+- **Auth**: simple token qua `X-API-Key`
