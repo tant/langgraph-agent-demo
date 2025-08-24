@@ -14,8 +14,15 @@ This module provides adapters to interact with the Ollama API:
 
 import os
 import requests
-from typing import List, Optional, Dict, Any, AsyncGenerator
 import pathlib
+import logging
+import json
+import httpx
+from typing import List, AsyncGenerator
+from agent.config import (
+    OLLAMA_BASE_URL, OLLAMA_GENERATE_URL, OLLAMA_EMBEDDING_URL, OLLAMA_TAGS_URL,
+    GENERATE_MODEL, EMBEDDING_MODEL
+)
 
 
 def _load_dotenv_simple(filename: str = ".env.local") -> None:
@@ -57,28 +64,14 @@ import json
 import httpx
 
 # --- Configuration ---
-# Allow configuring Ollama endpoints via environment variables.
-# Priority (highest -> lowest): specific URL env (e.g. OLLAMA_GENERATE_URL) -> OLLAMA_BASE_URL -> OLLAMA_HOST/OLLAMA_PORT
-OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "localhost")
-OLLAMA_PORT = int(os.environ.get("OLLAMA_PORT", 11434))
-_DEFAULT_BASE = f"http://{OLLAMA_HOST}:{OLLAMA_PORT}"
-
-# You can set a full base URL, or individual endpoint URLs for more control.
-OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", _DEFAULT_BASE)
-OLLAMA_GENERATE_URL = os.environ.get("OLLAMA_GENERATE_URL", f"{OLLAMA_BASE_URL}/api/generate")
-OLLAMA_EMBEDDING_URL = os.environ.get("OLLAMA_EMBEDDING_URL", f"{OLLAMA_BASE_URL}/api/embeddings")
-OLLAMA_TAGS_URL = os.environ.get("OLLAMA_TAGS_URL", f"{OLLAMA_BASE_URL}/api/tags")
-
-# Default models
-DEFAULT_GENERATE_MODEL = os.environ.get("DEFAULT_GENERATE_MODEL", "gpt-oss")
-DEFAULT_EMBEDDING_MODEL = os.environ.get("DEFAULT_EMBEDDING_MODEL", "bge-m3")
+# All config and model names are imported from agent.config
 
 # --- Logging ---
 logger = logging.getLogger(__name__)
 
 # --- Adapter Functions ---
 
-def generate_text(prompt: str, model: str = DEFAULT_GENERATE_MODEL, **kwargs) -> str:
+def generate_text(prompt: str, model: str = None, **kwargs) -> str:
     """
     Generate text using Ollama API.
     
@@ -95,8 +88,9 @@ def generate_text(prompt: str, model: str = DEFAULT_GENERATE_MODEL, **kwargs) ->
         ValueError: If the response is invalid or missing expected fields.
     """
     url = OLLAMA_GENERATE_URL
+    use_model = model or GENERATE_MODEL
     payload = {
-        "model": model,
+        "model": use_model,
         "prompt": prompt,
         "stream": False,
         **kwargs,
@@ -120,12 +114,13 @@ def generate_text(prompt: str, model: str = DEFAULT_GENERATE_MODEL, **kwargs) ->
         logger.error(f"Invalid response from Ollama generate API: {e}")
         raise
 
-async def generate_text_stream(prompt: str, model: str = "gpt-oss") -> AsyncGenerator[str, None]:
+async def generate_text_stream(prompt: str, model: str = None) -> AsyncGenerator[str, None]:
     """
     Generates text from a prompt using the Ollama API with streaming.
     """
     url = OLLAMA_GENERATE_URL
-    data = {"model": model, "prompt": prompt, "stream": True}
+    use_model = model or GENERATE_MODEL
+    data = {"model": use_model, "prompt": prompt, "stream": True}
     
     logger.info(f"Calling Ollama generate API with streaming for model {model}")
     
@@ -174,7 +169,7 @@ async def generate_text_stream(prompt: str, model: str = "gpt-oss") -> AsyncGene
     finally:
         logger.info("Ollama stream finished.")
 
-def get_embedding(text: str, model: str = DEFAULT_EMBEDDING_MODEL) -> List[float]:
+def get_embedding(text: str, model: str = None) -> List[float]:
     """
     Get embeddings for text using Ollama API.
     
@@ -190,7 +185,8 @@ def get_embedding(text: str, model: str = DEFAULT_EMBEDDING_MODEL) -> List[float
         ValueError: If the response is invalid or missing expected fields.
     """
     url = OLLAMA_EMBEDDING_URL
-    payload = {"model": model, "prompt": text}
+    use_model = model or EMBEDDING_MODEL
+    payload = {"model": use_model, "prompt": text}
     
     logger.info(f"Calling Ollama embeddings API with model {model}")
     try:
@@ -218,7 +214,7 @@ def get_embedding(text: str, model: str = DEFAULT_EMBEDDING_MODEL) -> List[float
 def test_generate():
     """Test the generate_text function with a simple prompt."""
     try:
-        response = generate_text("Say hello in Vietnamese", model=DEFAULT_GENERATE_MODEL)
+        response = generate_text("Say hello in Vietnamese")
         print(f"Generate test response: {response}")
         return response
     except Exception as e:
@@ -228,7 +224,7 @@ def test_generate():
 def test_embedding():
     """Test the get_embedding function with a simple text."""
     try:
-        embedding = get_embedding("Hello, this is a test sentence.", model=DEFAULT_EMBEDDING_MODEL)
+        embedding = get_embedding("Hello, this is a test sentence.")
         print(f"Embedding test: Got vector of length {len(embedding)}")
         # Check if it's a 1024-d vector as expected for bge-m3
         if len(embedding) != 1024:
@@ -245,5 +241,5 @@ if __name__ == "__main__":
     print("OLLAMA_GENERATE_URL:", OLLAMA_GENERATE_URL)
     print("OLLAMA_EMBEDDING_URL:", OLLAMA_EMBEDDING_URL)
     print("OLLAMA_TAGS_URL:", OLLAMA_TAGS_URL)
-    print("DEFAULT_GENERATE_MODEL:", DEFAULT_GENERATE_MODEL)
-    print("DEFAULT_EMBEDDING_MODEL:", DEFAULT_EMBEDDING_MODEL)
+    print("GENERATE_MODEL:", GENERATE_MODEL)
+    print("EMBEDDING_MODEL:", EMBEDDING_MODEL)

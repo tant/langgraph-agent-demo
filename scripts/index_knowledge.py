@@ -36,9 +36,8 @@ load_dotenv(".env.local")
 OLLAMA_EMBEDDING_URL = os.environ.get("OLLAMA_EMBEDDING_URL", "http://localhost:11434/api/embeddings")
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "bge-m3")
 CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE", 400))
-
-# ChromaDB persistent local path
-CHROMA_PATH = os.environ.get("CHROMA_PATH", "./database/chroma_db/")
+CHROMA_PATH = os.environ.get("CHROMA_PATH", "./database/chroma_db")
+CHROMA_COLLECTION = os.environ.get("CHROMA_COLLECTION", "conversations_dev")
 
 # --- Helpers ---
 def chunk_text(text, chunk_size=CHUNK_SIZE):

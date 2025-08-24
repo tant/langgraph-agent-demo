@@ -12,7 +12,7 @@ import chromadb
 import os
 
 # Configuration
-CHROMA_PATH = os.environ.get("CHROMA_PATH", "./database/chroma_db/")
+CHROMA_PATH = os.environ.get("CHROMA_PATH", "./database/chroma_db")
 COLLECTION_NAME = os.environ.get("CHROMA_COLLECTION", "conversations_dev")
 
 def main():

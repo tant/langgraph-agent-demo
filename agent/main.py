@@ -24,14 +24,10 @@ import pathlib
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "localhost")
 OLLAMA_PORT = int(os.environ.get("OLLAMA_PORT", 11434))
 CHROMA_PATH = os.environ.get("CHROMA_PATH", "./database/chroma_db")
-DATABASE_URL = os.environ.get(
-    "DATABASE_URL", "sqlite+aiosqlite:///./database/sqlite.db"
-)  # Default to SQLite for dev
+DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite+aiosqlite:///./database/sqlite.db")
 # For simplicity in Phase 1, we'll use a comma-separated list of valid keys from env
 # In production, this should be replaced with a more secure method
-X_API_KEYS = set(
-    os.environ.get("X_API_KEYS", "default-dev-key").split(",")
-)
+X_API_KEYS = set(os.environ.get("X_API_KEYS", "default-dev-key").split(","))
 
 # --- Logging ---
 logging.basicConfig(
@@ -80,40 +76,27 @@ async def api_key_auth_middleware(request: Request, call_next):
     
     logger.info("API Key is valid, proceeding with request")
     response = await call_next(request)
-    return response
-
-
-# --- App Events ---
-@app.on_event("startup")
-async def startup_event():
-    """Initialize database on startup"""
-    logger.info("Initializing database...")
-    await init_db()
-    logger.info("Database initialized.")
-
-
-# Pydantic models for request/response
-class CreateConversationRequest(BaseModel):
-    user_id: str
-    metadata: Optional[dict] = None
-
-class CreateConversationResponse(BaseModel):
-    id: str
-    user_id: str
-    created_at: datetime
-
-class CreateMessageRequest(BaseModel):
-    content: str
-    metadata: Optional[dict] = None
-
-class MessageResponse(BaseModel):
-    id: str
-    conversation_id: str
-    sender: str  # 'user' or 'assistant'
-    content: str
-    created_at: datetime
-    metadata: Optional[dict] = None
-
+    import logging
+    import uuid
+    from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
+    from fastapi.responses import JSONResponse
+    try:
+        # Prefer sse-starlette if installed for robust SSE handling
+        from sse_starlette.sse import EventSourceResponse
+    except Exception:
+        # Fallback: if not installed, disable EventSourceResponse (will use StreamingResponse)
+        EventSourceResponse = None
+    import json
+    import asyncio
+    from fastapi.middleware.cors import CORSMiddleware
+    from pydantic import BaseModel
+    from typing import Optional, List
+    from datetime import datetime
+    from agent.database import init_db, create_conversation, get_conversation, create_message, get_messages_history
+    from agent.langgraph_flow import AgentState, create_flow
+    from agent.retriever import upsert_vectors
+    import pathlib
+    from agent.config import CHROMA_PATH, DATABASE_URL, X_API_KEYS
 class ConversationHistoryResponse(BaseModel):
     messages: List[MessageResponse]
 @app.get("/healthz")
@@ -296,6 +279,59 @@ async def stream_message_endpoint(conversation_id: str, request: CreateMessageRe
                 try:
                     classify_out = await classify_node(initial_state)
                     logger.info(f"[{conversation_id}] classify_out={classify_out}")
+                
+                    # --- Friendly greeting and language-switch handling ---
+                    # If the user explicitly asks to speak English, respond immediately
+                    # with the short confirmation and switch the preferred language.
+                    def _detect_english_request(text: str) -> bool:
+                        if not text:
+                            return False
+                        t = text.lower()
+                        phrases = ["speak english", "tiếng anh được không", "nói tiếng anh được không", "can we speak english", "can i speak english", "speak in english", "please speak english", "you can speak english"]
+                        return any(p in t for p in phrases)
+
+                    latest_user_text = request.content or ""
+                    # also look at the most recent user message in history if available
+                    try:
+                        if not latest_user_text:
+                            for msg in reversed(initial_state.get("chat_history", [])):
+                                if isinstance(msg, dict) and msg.get("role") == "user":
+                                    latest_user_text = msg.get("content") or ""
+                                    break
+                    except Exception:
+                        latest_user_text = latest_user_text or ""
+
+                    if _detect_english_request(latest_user_text):
+                        # Speak-English acknowledgement (per user example) and switch to English
+                        eng_ack = "sure, you can speak english with me"
+                        payload = json.dumps({"chunk": eng_ack})
+                        yield f"data: {payload}\n\n"
+                        await asyncio.sleep(0)
+                        # persist this assistant acknowledgment so it appears in history
+                        try:
+                            assistant_msg = await create_message(conversation_id=conv_uuid, sender="assistant", text=eng_ack)
+                            await embed_and_store_message(message_id=str(assistant_msg.id), conversation_id=str(conv_uuid), user_id=conv.user_id, text=eng_ack)
+                        except Exception:
+                            logger.debug("Failed to persist english ack")
+                        # switch language preference for the remainder of the flow
+                        initial_state["preferred_language"] = "en"
+
+                    # If intent is confidently identified (no clarify needed) and it's one of our intents,
+                    # emit a short, cute caring greeting before proceeding.
+                    try:
+                        if classify_out.get("intent") in {"shopping", "warranty"} and not classify_out.get("clarify_needed"):
+                            lang_pref = initial_state.get("preferred_language", "vi")
+                            greet = "Dạ em rất vui được giúp quý khách! 💖 Em sẽ hỗ trợ ngay ạ." if lang_pref == "vi" else "Hi! I'm happy to help 💖 I'll assist you right away."
+                            payload = json.dumps({"chunk": greet})
+                            yield f"data: {payload}\n\n"
+                            await asyncio.sleep(0)
+                            try:
+                                assistant_msg = await create_message(conversation_id=conv_uuid, sender="assistant", text=greet)
+                                await embed_and_store_message(message_id=str(assistant_msg.id), conversation_id=str(conv_uuid), user_id=conv.user_id, text=greet)
+                            except Exception:
+                                logger.debug("Failed to persist greeting message")
+                    except Exception:
+                        pass
                 except Exception as e:
                     logger.error(f"[{conversation_id}] classify_node failed: {e}", exc_info=True)
                     classify_out = {"need_retrieval": False}

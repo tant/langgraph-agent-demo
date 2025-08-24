@@ -7,30 +7,27 @@ This module provides functions to interact with ChromaDB for vector retrieval:
 - Simple re-ranking based on scores and heuristics
 """
 
-import os
+
+
 import chromadb
-from typing import List, Dict, Any, Optional
 import logging
+import numpy as np
+from typing import List, Dict, Any, Optional, Sequence, Mapping
 from agent.ollama_client import get_embedding
+from agent.config import CHROMA_PATH, CHROMA_COLLECTION
 
-# --- Configuration ---
-CHROMA_PATH = os.environ.get("CHROMA_PATH", "./database/chroma_db")
 DEFAULT_TOP_K = 3
-# Collection name can be overridden via env for dev/prod parity
-DEFAULT_COLLECTION_NAME = os.environ.get("CHROMA_COLLECTION", "conversations_dev")
-
-# --- Logging ---
+DEFAULT_COLLECTION_NAME = CHROMA_COLLECTION
 logger = logging.getLogger(__name__)
 
 # --- ChromaDB Client ---
-# Create persistent client
 chroma_client = chromadb.PersistentClient(path=CHROMA_PATH)
 
-def get_or_create_collection(name: str = DEFAULT_COLLECTION_NAME):
+def get_or_create_collection(name: str = CHROMA_COLLECTION):
     """Get or create a ChromaDB collection."""
     return chroma_client.get_or_create_collection(name)
 
-# --- Retrieval Functions ---
+
 
 def query_vectors(
     query_text: str,
@@ -61,19 +58,19 @@ def query_vectors(
         
         # Query collection
         # ChromaDB requires $and operator for multiple filters
-        chroma_where = None
+        chroma_where: Optional[dict] = None
         if filter_metadata:
             if len(filter_metadata) == 1:
                 # Single filter, can use directly
                 chroma_where = filter_metadata
             else:
-                # Multiple filters, need to use $and
+                # Multiple filters, need to use $and with a list of dicts
                 chroma_where = {"$and": [{k: v} for k, v in filter_metadata.items()]}
-        
+
         results = collection.query(
             query_embeddings=[query_embedding],
             n_results=top_k,
-            where=chroma_where,
+            where=chroma_where,  # type: ignore
         )
 
         # Format results
@@ -135,9 +132,11 @@ def simple_rerank(results: List[Dict[str, Any]], query_metadata: Optional[Dict[s
     logger.info("Re-ranking completed")
     return ranked_results
 
+
+
 def upsert_vectors(
     documents: List[str],
-    metadatas: List[Dict[str, Any]],
+    metadatas: Sequence[Mapping[str, Any]],
     ids: List[str],
     collection_name: str = DEFAULT_COLLECTION_NAME,
 ):
@@ -156,19 +155,24 @@ def upsert_vectors(
 
     logger.info(f"Upserting {len(documents)} documents into collection '{collection_name}'")
     try:
-        # Get embeddings for all documents in a single call if possible,
-        # but ollama_client supports one by one, which is fine for background tasks.
+        # Get embeddings for all documents
         embeddings = [get_embedding(doc) for doc in documents]
+        embeddings_np = np.array(embeddings, dtype=np.float32)
 
         # Get collection
         collection = get_or_create_collection(collection_name)
 
+        # ChromaDB expects metadatas as list[dict[str, str|int|float|bool|None]]
+        def sanitize_metadata(md: Mapping[str, Any]) -> Dict[str, str | int | float | bool | None]:
+            return {k: v if isinstance(v, (str, int, float, bool)) or v is None else str(v) for k, v in md.items()}
+        sanitized_metadatas = [sanitize_metadata(md) for md in metadatas]
+
         # Upsert into collection
         collection.upsert(
             ids=ids,
-            embeddings=embeddings,  # chromadb accepts list[list[float]] via client adapter
+            embeddings=embeddings_np,  # chromadb expects ndarray[float32] or compatible
             documents=documents,
-            metadatas=metadatas,
+            metadatas=sanitized_metadatas,
         )
         logger.info(f"Successfully upserted {len(documents)} documents.")
     except Exception as e:

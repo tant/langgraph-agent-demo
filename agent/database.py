@@ -14,19 +14,8 @@ This script defines the data models and database setup logic.
 - Supports SQLite (dev) and Postgres (prod) via aiosqlite and asyncpg
 """
 
-import os
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.ext.asyncio import async_sessionmaker
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-from sqlalchemy import String, Text, DateTime, Integer, Uuid, func, Date
-import uuid
-from typing import AsyncGenerator, Optional, List
-from datetime import datetime, date
-
 # --- Configuration ---
-DATABASE_URL = os.environ.get(
-    "DATABASE_URL", "sqlite+aiosqlite:///./database/sqlite.db"
-)
+from agent.config import DATABASE_URL
 
 # --- Database Setup ---
 # Create async engine

@@ -15,15 +15,23 @@ from langchain_core.messages import HumanMessage
 import logging
 from agent.retriever import query_vectors, simple_rerank
 from agent.ollama_client import generate_text, generate_text_stream
-import os
 import pathlib
 import re
+from agent.config import (
+    INTENT_CONFIDENCE_THRESHOLD, PERSONA_MAX_CHARS,
+    SMALL_REASONING_MODEL, SMALL_GENERATE_MODEL, GENERATE_MODEL, REASONING_MODEL, EMBEDDING_MODEL
+)
 
-# --- Env-configurable knobs ---
-INTENT_CONFIDENCE_THRESHOLD: float = float(os.environ.get("INTENT_CONFIDENCE_THRESHOLD", "0.5"))
-PERSONA_MAX_CHARS: int = int(os.environ.get("PERSONA_MAX_CHARS", "4000"))
+# Model configuration for different tasks
+INTENT_MODEL: str = SMALL_REASONING_MODEL
+SOCIAL_MODEL: str = SMALL_GENERATE_MODEL
+RESPONSE_MODEL: str = GENERATE_MODEL
 
 logger = logging.getLogger(__name__)
+
+# Module-level default clarify questions (used as fallbacks)
+DEFAULT_CLARIFY_Q_VI = "Dạ em rất vui được giúp ạ — quý khách đang cần tư vấn mua hàng, kiểm tra bảo hành hay muốn trò chuyện thôi ạ?"
+DEFAULT_CLARIFY_Q_EN = "Hi! I'm happy to help — are you looking for shopping advice, a warranty check, or just to chat?"
 
 # --- State ---
 class AgentState(TypedDict):
@@ -44,28 +52,99 @@ class AgentState(TypedDict):
     preferred_language: Optional[str]  # 'vi' (default) or 'en'
 
 
+async def _llm_detect_social_intent_and_respond(text: str, preferred_lang: str = "vi") -> str:
+    """Use LLM to detect social/personal intents and generate appropriate acknowledgment responses."""
+    if not text:
+        return ""
+    
+    prompt = f"""Bạn là AI phân tích intent xã giao và tạo phản hồi phù hợp.
+
+Input: "{text}"
+Language: {preferred_lang}
+
+Nhiệm vụ:
+1. Xác định xem có phải social/personal intent không (ví dụ: chào hỏi, hỏi thăm sức khỏe, rủ đi chơi, hỏi thông tin cá nhân, etc.)
+2. Nếu có: tạo phản hồi ngắn, lịch sự, phù hợp văn hóa
+3. Nếu không: trả về "NONE"
+
+Nguyên tắc phản hồi:
+
+Ví dụ:
+
+Chỉ trả về phản hồi hoặc "NONE", không giải thích:"""
+
+    try:
+        from agent.ollama_client import generate_text
+        response = generate_text(prompt, model=SOCIAL_MODEL).strip()
+        
+        # Clean up response
+        if response and response != "NONE" and not response.lower().startswith("none"):
+            # Remove quotes if present
+            response = response.strip('"\'')
+            return response
+        return ""
+    except Exception as e:
+        logger.warning(f"LLM social detection failed: {e}")
+        return ""
+
+
+def _detect_social_intent_and_respond(text: str, preferred_lang: str = "vi") -> str:
+    """Detect social/personal intents and generate appropriate acknowledgment responses."""
+    if not text:
+        return ""
+    
+    t = text.lower()
+    
+    # Hangout/play invitations
+    hangout_vi = ["đi chơi", "đi chơi không", "ra ngoài", "gặp mặt", "hẹn hò", "đi ăn"]
+    hangout_en = ["hang out", "hangout", "go out", "meet up", "date", "play", "hang with me"]
+    if any(phrase in t for phrase in hangout_vi + hangout_en):
+        if preferred_lang == "en":
+            return "I'd love to chat with you here, but I'm working and can't go out"
+        return "Em đang làm việc ạ, không thể đi chơi được"
+    
+    # Personal questions
+    personal_vi = ["tên gì", "bao nhiêu tuổi", "ở đâu", "làm gì", "thích gì"]
+    personal_en = ["what's your name", "how old", "where do you live", "what do you like"]
+    if any(phrase in t for phrase in personal_vi + personal_en):
+        if preferred_lang == "en":
+            return "I'm an AI assistant here to help with shopping and warranty questions"
+        return "Em là trợ lý AI, chuyên hỗ trợ về mua hàng và bảo hành ạ"
+    
+    # Casual greetings beyond business
+    casual_vi = ["chào em", "có khỏe", "làm gì đó", "bận không", "em khỏe không", "khỏe không", "sao rồi", "thế nào", "ra sao"]
+    casual_en = ["how are you", "what's up", "are you busy", "wassup", "how you doing", "you ok", "you good"]
+    if any(phrase in t for phrase in casual_vi + casual_en):
+        if preferred_lang == "en":
+            return "I'm doing well, thank you for asking!"
+        return "Em khỏe, cảm ơn quý khách đã hỏi ạ!"
+    
+    # Work/job related
+    work_vi = ["công việc", "làm việc", "ca làm"]
+    work_en = ["your job", "your work", "working"]
+    if any(phrase in t for phrase in work_vi + work_en):
+        if preferred_lang == "en":
+            return "I work here helping customers with shopping and warranty questions"
+        return "Em làm việc ở đây, hỗ trợ khách hàng về mua hàng và bảo hành ạ"
+    
+    return ""  # No social intent detected
+
+
 def _keyword_heuristic_intent(text: str) -> str:
     """Fallback heuristic for intent classification using bilingual keywords."""
     t = (text or "").lower()
-    assemble_kw = [
-        "lắp ráp", "ráp máy", "cấu hình", "tư vấn linh kiện", "tương thích", "bottleneck", "ngân sách",
-        "tản nhiệt", "psu", "fps", "chơi game", "render", "build pc", "pc build", "spec",
-        "compatibility", "budget", "cooler", "motherboard", "cpu", "gpu", "ssd", "case", "mini-itx",
-        "micro-atx", "atx", "overclock", "bios", "driver", "photoshop", "premiere"
-    ]
+    # Only two intents supported now: shopping and warranty
     shopping_kw = [
         "mua", "đặt", "giá", "bao nhiêu", "khuyến mãi", "giảm giá", "còn hàng", "hết hàng",
         "giao hàng", "vận chuyển", "thanh toán", "đổi trả", "màu", "phiên bản", "mẫu", "buy",
-        "order", "price", "cost", "discount", "promotion", "in stock", "out of stock", "shipping",
-        "delivery", "payment", "return", "refund", "sku", "model", "color"
+        "order", "price", "cost", "discount", "promotion", "in stock", "shipping",
+        "delivery", "payment", "return", "refund", "sku", "model", "color", "tư vấn mua"
     ]
     warranty_kw = [
         "bảo hành", "kiểm tra bảo hành", "chính sách", "thời hạn", "serial", "hóa đơn", "1 đổi 1",
         "doa", "trung tâm bảo hành", "quy trình", "warranty", "check warranty", "warranty policy",
-        "duration", "sn", "invoice", "defect", "rma", "service center", "process"
+        "sn", "invoice", "defect", "rma", "service center"
     ]
-    if any(k in t for k in assemble_kw):
-        return "assemble_pc"
     if any(k in t for k in shopping_kw):
         return "shopping"
     if any(k in t for k in warranty_kw):
@@ -74,15 +153,12 @@ def _keyword_heuristic_intent(text: str) -> str:
 
 
 def _need_retrieval_for_intent(intent: str, latest_text: str) -> bool:
+    # shopping should normally require retrieval from knowledge for product info
     if intent == "shopping":
         return True
+    # warranty handled by DB lookup when serial present; otherwise may not need retrieval
     if intent == "warranty":
-        # If asking general policy without specifics could be False, but default True
-        return True
-    if intent == "assemble_pc":
-        # Default True as prices/compat often needed
-        return True
-    # unknown
+        return False
     return False
 
 
@@ -134,15 +210,19 @@ async def classify_node(state: AgentState) -> Dict[str, Any]:
     preferred_lang = state.get("preferred_language") or _detect_language_first_user(list(reversed(list(reversed(state.get("chat_history", []))))))
     state["preferred_language"] = preferred_lang
 
+    # Global default clarify strings (used later for attempt counting and fallbacks)
+    DEFAULT_CLARIFY_Q_VI = "Dạ em rất vui được giúp ạ — quý khách đang cần tư vấn mua hàng, kiểm tra bảo hành hay muốn trò chuyện thôi ạ?"
+    DEFAULT_CLARIFY_Q_EN = "Hi! I'm happy to help — are you looking for shopping advice, a warranty check, or just to chat?"
+
     # Build prompt
     from json import loads
     prompt = (
         "Bạn là bộ phân loại intent cho chat tiếng Việt. Chỉ trả về JSON hợp lệ theo schema.\n"
-        "Các intent hợp lệ: 'assemble_pc' (tư vấn lắp ráp máy), 'shopping' (mua/đặt hàng), 'warranty' (bảo hành), hoặc 'unknown'.\n"
-        "Nếu 'unknown', hãy tạo 1–2 câu hỏi làm rõ bằng tiếng Việt, lịch sự, ngắn gọn.\n"
+        "Các intent hợp lệ: 'shopping' (tư vấn mua hàng) và 'warranty' (bảo hành); nếu không rõ thì trả 'unknown'.\n"
+        "Nếu 'unknown', hãy tạo 1 câu hỏi làm rõ ngắn, nhẹ nhàng, giọng nữ, không ép người dùng (1–2 câu tối đa).\n"
         "Ưu tiên câu hỏi hiện tại hơn các câu trước. Hỗ trợ từ khóa song ngữ Việt–Anh.\n"
         "Schema JSON:\n"
-        "{\"intent\":\"assemble_pc|shopping|warranty|unknown\",\"confidence\":0.0,\"need_retrieval\":false,\"clarify_needed\":false,\"clarify_questions\":[\"\"],\"rationale\":\"\"}\n"
+        "{\"intent\":\"shopping|warranty|unknown\",\"confidence\":0.0,\"need_retrieval\":false,\"clarify_needed\":false,\"clarify_questions\":[\"\"],\"rationale\":\"\"}\n"
         f"latest_user_message: {latest!r}\n"
         f"recent_user_messages: {recents!r}\n"
         "Chỉ in JSON, KHÔNG kèm giải thích khác."
@@ -156,7 +236,7 @@ async def classify_node(state: AgentState) -> Dict[str, Any]:
 
     try:
         # Use sync generate_text; consistent with respond_node's pattern
-        raw = generate_text(prompt, model="gpt-oss")
+        raw = generate_text(prompt, model=INTENT_MODEL)
         logger.info(f"Classify raw: {raw}")
         data = None
         try:
@@ -179,7 +259,7 @@ async def classify_node(state: AgentState) -> Dict[str, Any]:
         logger.exception("Classify node: LLM classification failed, using heuristic fallback")
 
     # Fallbacks
-    if intent not in {"assemble_pc", "shopping", "warranty", "unknown"}:
+    if intent not in {"shopping", "warranty", "unknown"}:
         intent = "unknown"
 
     if latest and (intent == "unknown" or confidence < INTENT_CONFIDENCE_THRESHOLD):
@@ -189,26 +269,35 @@ async def classify_node(state: AgentState) -> Dict[str, Any]:
             confidence = max(confidence, max(0.6, INTENT_CONFIDENCE_THRESHOLD))
 
     # Derive need_retrieval if not provided
-    if need_retrieval is False and intent in {"assemble_pc", "shopping", "warranty"}:
+    if need_retrieval is False and intent in {"shopping", "warranty"}:
         need_retrieval = _need_retrieval_for_intent(intent, latest or "")
 
     # Clarify if still unknown or low confidence
     if intent == "unknown" or confidence < INTENT_CONFIDENCE_THRESHOLD:
         clarify_needed = True
-        # Normalize to a fixed clarify question (language-aware) for reliable attempt counting
-        DEFAULT_CLARIFY_Q_VI = "Để em hỗ trợ chính xác, quý khách đang cần tư vấn lắp ráp máy, hỏi thông tin mua hàng hay bảo hành ạ?"
-        DEFAULT_CLARIFY_Q_EN = "To help you accurately, are you looking for PC build advice, shopping/product info, or warranty support?"
-        DEFAULT_CLARIFY_Q = DEFAULT_CLARIFY_Q_EN if preferred_lang == "en" else DEFAULT_CLARIFY_Q_VI
-        clarify_questions = [DEFAULT_CLARIFY_Q]
+        
+        # Check if user had a social/personal intent that we should acknowledge first
+        social_response = await _llm_detect_social_intent_and_respond(latest or "", preferred_lang)
+        
+        if social_response:
+            # Create a two-part response: acknowledge social intent + gentle redirect
+            redirect_vi = "Quý khách có cần em hỗ trợ về thông tin hàng hóa hay bảo hành không ạ?"
+            redirect_en = "Can I help you with shopping or warranty questions?"
+            redirect = redirect_en if preferred_lang == "en" else redirect_vi
+            
+            combined_response = f"{social_response}. {redirect}"
+            clarify_questions = [combined_response]
+        else:
+            # Standard clarify for unclear business intents
+            DEFAULT_CLARIFY_Q_VI = "Dạ em rất vui được giúp ạ — quý khách đang cần tư vấn mua hàng, kiểm tra bảo hành hay muốn trò chuyện thôi ạ?"
+            DEFAULT_CLARIFY_Q_EN = "Hi! I'm happy to help — are you looking for shopping advice, a warranty check, or just to chat?"
+            DEFAULT_CLARIFY_Q = DEFAULT_CLARIFY_Q_EN if preferred_lang == "en" else DEFAULT_CLARIFY_Q_VI
+            clarify_questions = [DEFAULT_CLARIFY_Q]
 
     # Count clarify attempts from chat_history
     attempts = 0
     try:
-        DEFAULT_CLARIFY_Q = (
-            "To help you accurately, are you looking for PC build advice, shopping/product info, or warranty support?"
-            if preferred_lang == "en"
-            else "Để em hỗ trợ chính xác, quý khách đang cần tư vấn lắp ráp máy, hỏi thông tin mua hàng hay bảo hành ạ?"
-        )
+        DEFAULT_CLARIFY_Q = DEFAULT_CLARIFY_Q_EN if preferred_lang == "en" else DEFAULT_CLARIFY_Q_VI
         for msg in state.get("chat_history", []):
             if isinstance(msg, dict) and msg.get("role") == "assistant":
                 content = msg.get("content")
@@ -247,14 +336,12 @@ def build_prompt(state: AgentState) -> str:
     """Build a simple prompt from chat history and retrieved context."""
     parts = []
     # Include persona if configured
-    try:
-        persona_path = os.environ.get("PERSONA_PATH", str(pathlib.Path.cwd() / "prompts/system_persona_vi.md"))
-        pp = pathlib.Path(persona_path)
-        if pp.exists():
-            parts.append("System Persona:")
-            parts.append(pp.read_text(encoding="utf-8")[:PERSONA_MAX_CHARS])  # cap by env
-    except Exception:
-        pass
+    from agent.config import PERSONA_PATH
+    persona_path = PERSONA_PATH
+    pp = pathlib.Path(persona_path)
+    if pp.exists():
+        parts.append("System Persona:")
+        parts.append(pp.read_text(encoding="utf-8")[:PERSONA_MAX_CHARS])  # cap by env
     # include retrieved context first if present
     rc = state.get("retrieved_context") or []
     if rc:
@@ -352,7 +439,7 @@ async def respond_node(state: AgentState) -> Dict[str, str]:
         prompt = build_prompt(state)
         logger.info(f"Respond node: Built prompt:\n{prompt}")
 
-        response_text = generate_text(prompt, model="gpt-oss")
+        response_text = generate_text(prompt, model=RESPONSE_MODEL)
         state["response"] = response_text
         logger.info("Respond node: Generated response successfully")
 
@@ -376,7 +463,7 @@ async def stream_respond_node(state: AgentState) -> AsyncGenerator[Dict[str, str
         
         # Use the streaming client
         full_response = ""
-        async for chunk in generate_text_stream(prompt, model="gpt-oss"):
+        async for chunk in generate_text_stream(prompt, model=RESPONSE_MODEL):
             if chunk:
                 full_response += chunk
                 logger.info(f"Node yielding chunk: '{chunk}'")
@@ -397,10 +484,8 @@ async def clarify_stream_node(state: AgentState) -> AsyncGenerator[Dict[str, str
     if questions and isinstance(questions, list) and isinstance(questions[0], str) and questions[0].strip():
         yield {"response": questions[0]}
         return
-    # Fallback default clarify question
-    default_vi = "Để em hỗ trợ chính xác, quý khách đang cần tư vấn lắp ráp máy, hỏi thông tin mua hàng hay bảo hành ạ?"
-    default_en = "To help you accurately, are you looking for PC build advice, shopping/product info, or warranty support?"
-    yield {"response": default_en if lang == "en" else default_vi}
+    # Fallback default clarify question (module-level defaults)
+    yield {"response": DEFAULT_CLARIFY_Q_EN if lang == "en" else DEFAULT_CLARIFY_Q_VI}
 
 
 async def warranty_stream_node(state: AgentState) -> AsyncGenerator[Dict[str, Any], None]:
@@ -460,7 +545,8 @@ async def warranty_stream_node(state: AgentState) -> AsyncGenerator[Dict[str, An
     # Build a persona-aware follow-up line
     def _follow_up(lang: str) -> str:
         try:
-            persona_path = os.environ.get("PERSONA_PATH", str(pathlib.Path.cwd() / "prompts/system_persona_vi.md"))
+            from agent.config import PERSONA_PATH
+            persona_path = PERSONA_PATH
             pp = pathlib.Path(persona_path)
             if pp.exists():
                 for raw in pp.read_text(encoding="utf-8").splitlines():
